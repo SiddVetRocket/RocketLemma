@@ -142,6 +142,4 @@ AUTHOR
 ------
 
 Siddharth Singh
-Applied Mathematics & AI Researcher
-GitHub: https://github.com/
-LinkedIn: https://linkedin.com/
+
