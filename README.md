@@ -30,7 +30,7 @@ FEATURES
    - Implemented in PyTorch with LSTM layers for summarization tasks.
    - Modular design for future integration of attention or transformer layers.
 
-4. Pneumonia Classification
+4. Pneumonia Classification - Example
    - Identifies “yes,” “no,” or “maybe” based on contextual cues:
      * Negations: “no evidence of pneumonia”
      * Uncertainty: “cannot exclude pneumonia”
