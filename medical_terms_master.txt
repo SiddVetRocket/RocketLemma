@@ -1,0 +1,601 @@
+# Master list of medical terms for RocketLemma / MedSpacy1
+# One term per line, case-insensitive; comments start with '#'.
+# This is a starter set across systems (symptoms, findings, diagnoses, anatomy).
+
+# -----------------------------
+# General clinical descriptors
+# -----------------------------
+acute findings
+acute process
+acute disease
+acute infection
+chronic disease
+chronic changes
+chronic process
+clinical correlation
+prior study
+comparison exam
+follow up
+follow-up study
+interval change
+no acute disease
+no acute findings
+no significant change
+stable appearance
+stable exam
+worsening findings
+improving findings
+
+# -------------
+# Vital signs / general symptoms
+# -------------
+fever
+pyrexia
+chills
+rigors
+night sweats
+weight loss
+weight gain
+fatigue
+malaise
+weakness
+lethargy
+cachexia
+dehydration
+shock
+sepsis
+septicemia
+bacteremia
+
+# -------------
+# Respiratory / pulmonary
+# -------------
+shortness of breath
+dyspnea
+orthopnea
+paroxysmal nocturnal dyspnea
+tachypnea
+respiratory distress
+respiratory failure
+acute respiratory distress syndrome
+ards
+cough
+productive cough
+nonproductive cough
+hemoptysis
+wheezing
+stridor
+pleuritic pain
+chest tightness
+
+pneumonia
+lobar pneumonia
+viral pneumonia
+bacterial pneumonia
+aspiration pneumonia
+interstitial pneumonia
+bronchopneumonia
+atypical pneumonia
+
+bronchitis
+acute bronchitis
+chronic bronchitis
+bronchiolitis
+bronchiectasis
+bronchospasm
+air trapping
+airway obstruction
+airway narrowing
+
+chronic obstructive pulmonary disease
+copd
+emphysema
+bullous emphysema
+hyperinflation
+pulmonary fibrosis
+interstitial lung disease
+sarcoidosis
+pulmonary edema
+cardiogenic pulmonary edema
+noncardiogenic pulmonary edema
+ground glass opacities
+groundglass opacity
+consolidation
+lung consolidation
+infiltrate
+infiltrates
+airspace disease
+alveolar disease
+interstitial thickening
+reticular opacities
+honeycombing
+tree in bud nodules
+tree-in-bud nodularity
+mucous plugging
+mucus plugging
+bronchial wall thickening
+bronchial thickening
+
+pleural effusion
+small pleural effusion
+moderate pleural effusion
+large pleural effusion
+loculated effusion
+pleural thickening
+pleural plaque
+empyema
+pneumothorax
+tension pneumothorax
+hydropneumothorax
+chylothorax
+
+pulmonary embolism
+pe
+pulmonary hypertension
+pulmonary arterial hypertension
+pulmonary nodule
+pulmonary nodules
+pulmonary mass
+lung mass
+hilar mass
+mediastinal mass
+lung cancer
+bronchogenic carcinoma
+non small cell lung cancer
+small cell lung cancer
+metastatic disease
+metastasis
+metastases
+
+# -------------
+# Cardiac / vascular
+# -------------
+cardiomegaly
+enlarged heart
+heart failure
+congestive heart failure
+chf
+left heart failure
+right heart failure
+cardiomyopathy
+dilated cardiomyopathy
+hypertrophic cardiomyopathy
+ischemic cardiomyopathy
+
+coronary artery disease
+cad
+myocardial infarction
+mi
+acute myocardial infarction
+old infarct
+cardiac ischemia
+ischemia
+angina
+unstable angina
+
+pericardial effusion
+tamponade
+pericarditis
+myopericarditis
+endocarditis
+valvular disease
+aortic stenosis
+aortic regurgitation
+mitral stenosis
+mitral regurgitation
+tricuspid regurgitation
+pulmonic regurgitation
+
+atrial enlargement
+left atrial enlargement
+right atrial enlargement
+ventricular hypertrophy
+left ventricular hypertrophy
+right ventricular hypertrophy
+ventricular dysfunction
+
+atherosclerosis
+vascular calcifications
+arterial calcifications
+aneurysm
+aortic aneurysm
+thoracic aortic aneurysm
+abdominal aortic aneurysm
+aortic dissection
+deep vein thrombosis
+dvt
+pulmonary embolus
+thrombophlebitis
+thrombus
+embolus
+venous insufficiency
+varicose veins
+
+# -------------
+# Neurologic
+# -------------
+stroke
+cerebral infarct
+cerebral ischemia
+acute infarct
+chronic infarct
+transient ischemic attack
+tia
+intracranial hemorrhage
+subarachnoid hemorrhage
+subdural hematoma
+epidural hematoma
+intraparenchymal hemorrhage
+microhemorrhage
+
+demyelinating disease
+multiple sclerosis
+ms plaques
+white matter lesions
+encephalitis
+meningitis
+encephalopathy
+hypoxic ischemic injury
+
+seizure
+epilepsy
+status epilepticus
+neuropathy
+peripheral neuropathy
+radiculopathy
+myelopathy
+spinal stenosis
+disc herniation
+disc protrusion
+spinal cord compression
+
+brain tumor
+glioma
+astrocytoma
+glioblastoma
+gbm
+meningioma
+pituitary adenoma
+schwannoma
+acoustic neuroma
+metastatic brain disease
+brain metastasis
+brain metastases
+
+# -------------
+# Oncology / masses
+# -------------
+malignancy
+malignant neoplasm
+benign neoplasm
+neoplasm
+mass
+soft tissue mass
+osseous lesion
+bone lesion
+lytic lesion
+sclerotic lesion
+mixed lytic and sclerotic lesion
+lymphadenopathy
+enlarged lymph node
+enlarged lymph nodes
+lymph node metastasis
+lymphoma
+hodgkin lymphoma
+non hodgkin lymphoma
+leukemia
+acute leukemia
+chronic leukemia
+plasmacytoma
+multiple myeloma
+
+breast cancer
+breast mass
+breast nodule
+microcalcifications
+breast calcifications
+axillary lymphadenopathy
+
+hepatocellular carcinoma
+hcc
+liver mass
+liver lesion
+hemangioma
+focal nodular hyperplasia
+fnh
+metastatic liver disease
+liver metastasis
+
+renal mass
+renal cell carcinoma
+rcc
+angiomyolipoma
+cystic lesion
+simple cyst
+complex cyst
+ovarian cyst
+adnexal mass
+uterine fibroid
+fibroid
+prostate cancer
+prostate enlargement
+benign prostatic hyperplasia
+bph
+
+# -------------
+# Gastrointestinal / hepatobiliary
+# -------------
+esophagitis
+gastritis
+duodenitis
+enteritis
+colitis
+pancolitis
+proctitis
+diverticulosis
+diverticulitis
+appendicitis
+acute appendicitis
+bowel obstruction
+small bowel obstruction
+large bowel obstruction
+ileus
+volvulus
+intussusception
+ischemic colitis
+mesenteric ischemia
+mesenteric thrombosis
+
+cholelithiasis
+cholecystitis
+acute cholecystitis
+acalculous cholecystitis
+biliary colic
+choledocholithiasis
+bile duct dilatation
+biliary obstruction
+biliary stricture
+primary sclerosing cholangitis
+
+hepatitis
+cirrhosis
+hepatic steatosis
+fatty liver
+nonalcoholic fatty liver disease
+portal hypertension
+splenomegaly
+hypersplenism
+ascites
+peritonitis
+peritoneal carcinomatosis
+
+pancreatitis
+acute pancreatitis
+chronic pancreatitis
+necrotizing pancreatitis
+pancreatic pseudocyst
+pancreatic mass
+pancreatic carcinoma
+
+# -------------
+# Genitourinary
+# -------------
+nephrolithiasis
+renal stones
+kidney stone
+kidney stones
+ureteral stone
+ureteric stone
+bladder stone
+hydronephrosis
+hydroureter
+pyelonephritis
+acute pyelonephritis
+chronic kidney disease
+ckd
+renal insufficiency
+acute kidney injury
+aki
+
+cystitis
+urinary tract infection
+uti
+hematuria
+proteinuria
+
+ovarian torsion
+testicular torsion
+epididymitis
+orchitis
+hydrocele
+varicocele
+uterine fibroid
+endometriosis
+adenomyosis
+pelvic inflammatory disease
+
+# -------------
+# Musculoskeletal / spine
+# -------------
+osteoporosis
+osteopenia
+osteomyelitis
+septic arthritis
+degenerative joint disease
+osteoarthritis
+rheumatoid arthritis
+erosive arthritis
+joint effusion
+chondromalacia
+meniscal tear
+ligament tear
+rotator cuff tear
+labral tear
+tendinosis
+tendonitis
+bursitis
+
+compression fracture
+vertebral fracture
+pathologic fracture
+stress fracture
+bone contusion
+bone marrow edema
+avascular necrosis
+avn
+scoliosis
+kyphosis
+lordosis
+spondylosis
+spondylolisthesis
+spondylolysis
+spinal stenosis
+facet arthropathy
+
+# -------------
+# Hematologic / immune
+# -------------
+anemia
+iron deficiency anemia
+hemolytic anemia
+aplastic anemia
+thrombocytopenia
+thrombocytosis
+leukopenia
+leukocytosis
+neutropenia
+neutrophilia
+lymphocytosis
+eosinophilia
+coagulopathy
+disseminated intravascular coagulation
+dic
+deep vein thrombosis
+venous thromboembolism
+
+autoimmune disease
+systemic lupus erythematosus
+sle
+rheumatoid arthritis
+vasculitis
+giant cell arteritis
+temporal arteritis
+
+# -------------
+# Endocrine / metabolic
+# -------------
+diabetes mellitus
+type 1 diabetes
+type 2 diabetes
+diabetic ketoacidosis
+dka
+hyperglycemia
+hypoglycemia
+thyroid nodule
+thyroiditis
+hypothyroidism
+hyperthyroidism
+graves disease
+hashimoto thyroiditis
+adrenal mass
+adrenal adenoma
+adrenal hyperplasia
+cushing syndrome
+addison disease
+hyperparathyroidism
+hypoparathyroidism
+hypercalcemia
+hypocalcemia
+hyperlipidemia
+dyslipidemia
+
+# -------------
+# Infectious disease / sepsis
+# -------------
+pneumonia
+aspiration pneumonia
+septicemia
+bacteremia
+fungemia
+endocarditis
+osteomyelitis
+cellulitis
+abscess
+soft tissue abscess
+epidural abscess
+paraspinal abscess
+intraabdominal abscess
+retroperitoneal abscess
+perinephric abscess
+empyema
+meningitis
+encephalitis
+septic arthritis
+
+# -------------
+# Oncology treatment / devices
+# -------------
+radiation changes
+postradiation changes
+postoperative changes
+postsurgical changes
+surgical clips
+surgical hardware
+orthopedic hardware
+pacemaker
+defibrillator
+icd
+vascular stent
+coronary stent
+central venous catheter
+port a catheter
+portacath
+chest tube
+endotracheal tube
+tracheostomy tube
+feeding tube
+gastrostomy tube
+
+# -------------
+# Common imaging phrases (allowed as conditions/findings)
+# -------------
+no acute intracranial abnormality
+no intracranial hemorrhage
+no evidence of pulmonary embolism
+no evidence of pulmonary embolus
+no pneumothorax
+no pleural effusion
+no focal consolidation
+no displaced fracture
+no acute fracture
+displaced fracture
+nondisplaced fracture
+acute fracture
+old healed fracture
+healed fracture
+posttraumatic deformity
+degenerative changes
+degenerative disc disease
+degenerative joint disease
+
+# -------------
+# Veterinary / cross-cutting (you can extend these)
+# -------------
+tracheal collapse
+bronchomalacia
+heartworm disease
+degenerative myelopathy
+hip dysplasia
+elbow dysplasia
+intervertebral disc disease
+ivdd
+lymphoma
+hemangiosarcoma
+mast cell tumor
+otitis externa
+otitis media
+chronic otitis
+pancreatitis
+protein losing enteropathy
+protein losing nephropathy
+megaesophagus
