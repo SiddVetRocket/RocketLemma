@@ -8,63 +8,140 @@ This script processes medical reports (Findings and Conclusions) from either:
 It extracts medical conditions and classifies them as true / false / indeterminate
 using medspaCy's context detection.
 
-Author: MedSpacy1 Project (updated to support folder input)
+This version NO LONGER does TF/IDF word stats or "jargon gating".
+Instead, it uses a master list of medical terms (medical_terms_master.txt)
+to keep only entities whose text matches that list (after normalization).
+
+Author: MedSpacy1 Project (updated to support folder input & master-term filtering)
 Date: 2025-10-14
 """
 
 import sys
-import math
 import re
 from pathlib import Path
 from typing import List, Dict, Tuple, Any, Iterable, Optional, Set
 from dataclasses import dataclass
-from collections import Counter
 
 import pandas as pd
 import spacy  # noqa: F401  (spaCy is used by medspaCy under the hood)
 import medspacy
-import spacy
+
+# Path to the master medical term list (one term per line, comments start with "#")
+MASTER_TERMS_FILE = Path(__file__).resolve().parent / "medical_terms_master.txt"
 
 
+# ---------------------------------------------------------------------
+# Helper functions for term normalization and master-term loading
+# ---------------------------------------------------------------------
+EXTRA_STOPWORDS: Set[str] = {
+    "as", "is", "true", "false", "of", "at", "to", "for", "with",
+    "on", "in", "and", "or", "no", "not", "normal", "mild",
+    "moderate", "severe", "slight", "slightly",
+}
+
+
+def normalize_term(text: str) -> str:
+    """
+    Normalize a token or phrase so it can be matched to the master term list.
+    - lowercase
+    - strip leading/trailing whitespace
+    - collapse internal whitespace
+    - remove most non-alphanumeric junk while keeping spaces, hyphens, apostrophes
+    """
+    if text is None:
+        return ""
+
+    s = text.lower().strip()
+    # keep letters, numbers, spaces, hyphens, apostrophes; drop everything else
+    s = re.sub(r"[^a-z0-9\s\-\']", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def load_master_terms(path: Path) -> Tuple[Dict[str, str], Set[str]]:
+    """
+    Load master medical terms from a .txt file (one term per line).
+    Lines starting with '#' or blank lines are ignored.
+
+    Returns:
+        mapping: normalized_term -> canonical_term
+        term_set: set of normalized terms for fast membership checks
+    """
+    mapping: Dict[str, str] = {}
+    if not path.exists():
+        print(f"[WARN] Master terms file not found at {path}. "
+              f"No term filtering will be applied (all entities kept).")
+        return mapping, set()
+
+    with path.open(encoding="utf-8") as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+
+            canonical = raw
+            norm = normalize_term(raw)
+
+            if not norm:
+                continue
+            if len(norm) <= 2:
+                # extremely short tokens are almost never meaningful on their own
+                continue
+            if norm in EXTRA_STOPWORDS:
+                # avoid polluting the list with generic words
+                continue
+
+            # Keep first spelling we see; ignore duplicates
+            mapping.setdefault(norm, canonical)
+
+    term_set = set(mapping.keys())
+    print(f"[INFO] Loaded {len(mapping)} master medical terms from {path.name}")
+    return mapping, term_set
+
+
+# ---------------------------------------------------------------------
+# Core analyzer
+# ---------------------------------------------------------------------
 @dataclass
-class TermStatsConfig:
-    """Configuration for term statistics used to surface medical jargon."""
-    min_count: int = 3
-    min_doc_frac: float = 0.002
-    max_doc_frac: float = 0.50
-    top_k: int = 200
-    lowercase: bool = True
-    keep_pos: Optional[Set[str]] = None
-    remove_stop: bool = False
-    keep_hyphenated: bool = True
-    min_len: int = 2
-
-
 class MedicalReportAnalyzer:
     """
     Analyzes medical reports to extract and classify medical conditions.
-    """
 
-    def __init__(self, model_name: str = "en_core_web_sm"):
+    This version:
+      - runs medspaCy on the full text (no jargon gating on sentences)
+      - then filters extracted entities to only keep those whose text
+        appears in the master term list (after normalization).
+    """
+    model_name: str = "en_core_web_sm"
+
+    def __post_init__(self):
         """
-        Initialize the MedSpaCy pipeline.
+        Initialize the MedSpaCy pipeline and load the master term list.
         """
-        self.model_name = model_name
-        print(f"Initializing MedSpacy with model: {model_name}")
+        print(f"Initializing MedSpacy with model: {self.model_name}")
         try:
             # disable parser to avoid conflicts with PyRuSH sentencizer
-            self.nlp = medspacy.load(model_name, disable=["parser"])
+            self.nlp = medspacy.load(self.model_name, disable=["parser"])
         except OSError:
-            print(f"Model '{model_name}' not found. Please install it:\n"
-                  f"  python -m spacy download {model_name}")
+            print(f"Model '{self.model_name}' not found. Please install it:\n"
+                  f"  python -m spacy download {self.model_name}")
             sys.exit(1)
 
         self._add_medical_patterns()
-        self.jargon_terms: List[str] = []
-        self.jargon_terms_set: Set[str] = set()
+
+        # Load master medical term list
+        self.master_terms_map, self.master_terms_set = load_master_terms(MASTER_TERMS_FILE)
+
         print("MedSpacy pipeline initialized successfully")
         print(f"Pipeline components: {self.nlp.pipe_names}")
+        if self.master_terms_set:
+            print(f"Master-term filtering active ({len(self.master_terms_set)} terms).")
+        else:
+            print("Master-term filtering is OFF (no terms loaded). All entities will be kept.")
 
+    # ----------------------------
+    # Custom medspacy patterns
+    # ----------------------------
     def _add_medical_patterns(self) -> None:
         """
         Add custom medical entity patterns to the target matcher.
@@ -116,133 +193,6 @@ class MedicalReportAnalyzer:
         ]
         target_matcher.add(medical_patterns)
         print(f"Added {len(medical_patterns)} custom medical condition patterns")
-
-    # ----------------------------
-    # Word statistics / jargon gating
-    # ----------------------------
-    @staticmethod
-    def _iter_docs(df: pd.DataFrame, text_cols: List[str]) -> Iterable[str]:
-        """Concatenate the requested text columns per row."""
-        for _, row in df.iterrows():
-            parts = []
-            for c in text_cols:
-                val = row.get(c, "")
-                if isinstance(val, str):
-                    parts.append(val)
-            yield " ".join(parts).strip()
-
-    @staticmethod
-    def _tokenize_docs(
-        docs: Iterable[str],
-        nlp,
-        cfg: TermStatsConfig
-    ) -> Tuple[List[List[str]], Counter, Counter]:
-        """Tokenize docs and collect TF/DF stats."""
-        tokenized_docs: List[List[str]] = []
-        tf = Counter()
-        df = Counter()
-
-        for doc in nlp.pipe(docs, batch_size=200, n_process=1, disable=["ner"]):
-            seen_in_doc = set()
-            toks = []
-            for t in doc:
-                if t.is_space or t.is_punct:
-                    continue
-                if not cfg.keep_hyphenated and "-" in t.text:
-                    continue
-
-                lemma = t.lemma_ if t.lemma_ != "-PRON-" else t.lower_
-                text_norm = lemma.lower() if cfg.lowercase else lemma
-
-                if cfg.remove_stop and t.is_stop:
-                    continue
-                if cfg.keep_pos and t.pos_ not in cfg.keep_pos:
-                    continue
-                if not t.is_alpha and (not cfg.keep_hyphenated or "-" not in text_norm):
-                    continue
-                if len(text_norm) < cfg.min_len:
-                    continue
-
-                toks.append(text_norm)
-                tf[text_norm] += 1
-                seen_in_doc.add(text_norm)
-
-            for w in seen_in_doc:
-                df[w] += 1
-
-            tokenized_docs.append(toks)
-
-        return tokenized_docs, tf, df
-
-    def compute_jargon_terms(
-        self,
-        df: pd.DataFrame,
-        text_cols: List[str],
-        cfg: Optional[TermStatsConfig] = None,
-    ) -> List[str]:
-        """
-        Run word statistics to identify likely medical jargon terms before analysis.
-        """
-        cfg = cfg or TermStatsConfig()
-        docs = list(self._iter_docs(df, text_cols))
-        n_docs = len(docs)
-        if n_docs == 0:
-            return []
-
-        # Use a lightweight spaCy pipeline for term stats to keep it fast.
-        stats_nlp = spacy.load(self.model_name, disable=["ner"])
-        stats_nlp.max_length = max(1_000_000, int(sum(len(d) for d in docs) * 1.1))
-
-        _, tf, df_counter = self._tokenize_docs(docs, stats_nlp, cfg)
-
-        rows = []
-        for term, count in tf.items():
-            if count < cfg.min_count:
-                continue
-            df_term = df_counter[term]
-            doc_frac = df_term / max(1, n_docs)
-            idf = math.log((n_docs + 1) / (df_term + 1)) + 1.0
-            rows.append((term, count, df_term, doc_frac, idf))
-
-        if not rows:
-            return []
-
-        table = pd.DataFrame(rows, columns=["term", "tf", "df", "doc_frac", "idf"])
-        table["jargon_score"] = table["idf"] * (table["tf"] + 1).map(math.log)
-
-        mask = (table["doc_frac"] >= cfg.min_doc_frac) & (table["doc_frac"] <= cfg.max_doc_frac)
-        jargon_df = (
-            table.loc[mask]
-                 .sort_values(["jargon_score", "idf", "tf"], ascending=False)
-                 .head(cfg.top_k)[["term", "jargon_score", "tf", "df"]]
-        )
-        jargon_terms = [t for t, _, _, _ in jargon_df.itertuples(index=False, name=None)]
-
-        print("\nJargon identification complete:")
-        print(f"  Documents processed: {n_docs}")
-        print(f"  Candidate jargon terms (top {len(jargon_terms)}): {', '.join(jargon_terms[:15])}"
-              f"{' ...' if len(jargon_terms) > 15 else ''}")
-
-        return jargon_terms
-
-    def _filter_to_jargon(self, text: str) -> str:
-        """
-        Keep only sentences that contain identified jargon terms.
-        """
-        if not text:
-            return ""
-        if not self.jargon_terms_set:
-            return text
-
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        kept = []
-        for sent in sentences:
-            s_lower = sent.lower()
-            if any(term in s_lower for term in self.jargon_terms_set):
-                kept.append(sent)
-
-        filtered = " ".join(kept).strip()
-        return filtered
 
     # ----------------------------
     # Input loading (CSV or folder)
@@ -314,19 +264,41 @@ class MedicalReportAnalyzer:
     # ----------------------------
     # NLP & extraction
     # ----------------------------
+    def _entity_is_in_master_list(self, ent_text: str) -> bool:
+        """
+        Return True if the entity text appears in the master term list (after normalization).
+
+        If no master terms are loaded, this always returns True (i.e., filtering is off).
+        """
+        if not self.master_terms_set:
+            return True  # no filtering configured
+
+        norm = normalize_term(ent_text)
+        if not norm:
+            return False
+        if norm in EXTRA_STOPWORDS:
+            return False
+        return norm in self.master_terms_set
+
     def extract_conditions(self, text: str) -> List[Dict[str, Any]]:
-        """Extract medical conditions from text with sentiment classification."""
+        """
+        Extract medical conditions from text with sentiment classification.
+
+        NOTE:
+          - We now run on the FULL text (no jargon sentence gating).
+          - After medspaCy finds entities, we keep only those whose text
+            matches the master term list (after normalization).
+        """
         if not text or (isinstance(text, float) and pd.isna(text)):
             return []
 
-        text_filtered = self._filter_to_jargon(text)
-        if not text_filtered:
-            return []
-
-        doc = self.nlp(text_filtered)
+        doc = self.nlp(text)
         conditions: List[Dict[str, Any]] = []
 
         for ent in doc.ents:
+            if not self._entity_is_in_master_list(ent.text):
+                continue
+
             info: Dict[str, Any] = {
                 "condition": ent.text,
                 "label": ent.label_,
@@ -359,9 +331,9 @@ class MedicalReportAnalyzer:
         """Analyze a complete report (Findings + Conclusions) and return a rich dict."""
         print(f"\nAnalyzing Report ID: {row_id}")
         findings_conditions = self.extract_conditions(findings)
-        print(f"  Found {len(findings_conditions)} conditions in Findings")
+        print(f"  Found {len(findings_conditions)} filtered conditions in Findings")
         conclusions_conditions = self.extract_conditions(conclusions)
-        print(f"  Found {len(conclusions_conditions)} conditions in Conclusions")
+        print(f"  Found {len(conclusions_conditions)} filtered conditions in Conclusions")
 
         return {
             "row_id": row_id,
@@ -380,18 +352,13 @@ class MedicalReportAnalyzer:
     def process_input(self, input_path: str, output_path: str | None = None) -> pd.DataFrame:
         """
         Process either a CSV or a directory of .txt files.
+
+        NOTE: Word-statistics / jargon gating has been removed.
+              We now rely solely on medspaCy + master-term filtering.
         """
         print(f"Loading medical reports from: {input_path}")
         df = self.load_reports(input_path)
         print(f"Successfully loaded {len(df)} reports")
-
-        print("\nIdentifying medical jargon (runs once before detailed analysis)...")
-        self.jargon_terms = self.compute_jargon_terms(df, ["Findings", "Conclusions"])
-        self.jargon_terms_set = set(self.jargon_terms)
-        if not self.jargon_terms:
-            print("  No jargon terms identified; proceeding with full text.")
-        else:
-            print(f"  Jargon gating active. Sentences without these terms will be skipped.")
 
         results: List[Dict[str, Any]] = []
         for _, row in df.iterrows():
