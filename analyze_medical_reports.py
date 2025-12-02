@@ -8,27 +8,26 @@ This script processes medical reports (Findings and Conclusions) from either:
 It extracts medical conditions and classifies them as true / false / indeterminate
 using medspaCy's context detection.
 
-This version NO LONGER does TF/IDF word stats or "jargon gating".
-Instead, it uses a master list of medical terms (medical_terms_master.txt)
-to keep only entities whose text matches that list (after normalization).
+This version:
+  - REMOVES any TF/IDF word stats or "jargon gating" from word_stats.py.
+  - Uses a master list of medical terms (medical_terms_master.txt) to filter entities.
+  - Supports an optional max_rows argument so you can run only the first N reports.
 
-Author: MedSpacy1 Project (updated to support folder input & master-term filtering)
-Date: 2025-10-14
+Author: MedSpacy1 Project (updated for RocketLemma)
 """
 
 import sys
 import re
 from pathlib import Path
-from typing import List, Dict, Tuple, Any, Iterable, Optional, Set
+from typing import List, Dict, Tuple, Any, Optional, Set
 from dataclasses import dataclass
 
 import pandas as pd
-import spacy  # noqa: F401  (spaCy is used by medspaCy under the hood)
+import spacy  # noqa: F401
 import medspacy
 
 # Path to the master medical term list (one term per line, comments start with "#")
 MASTER_TERMS_FILE = Path(__file__).resolve().parent / "medical_terms_master.txt"
-
 
 # ---------------------------------------------------------------------
 # Helper functions for term normalization and master-term loading
@@ -52,7 +51,7 @@ def normalize_term(text: str) -> str:
         return ""
 
     s = text.lower().strip()
-    # keep letters, numbers, spaces, hyphens, apostrophes; drop everything else
+    # Keep letters, numbers, spaces, hyphens, apostrophes; drop everything else
     s = re.sub(r"[^a-z0-9\s\-\']", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -91,7 +90,6 @@ def load_master_terms(path: Path) -> Tuple[Dict[str, str], Set[str]]:
                 # avoid polluting the list with generic words
                 continue
 
-            # Keep first spelling we see; ignore duplicates
             mapping.setdefault(norm, canonical)
 
     term_set = set(mapping.keys())
@@ -108,7 +106,7 @@ class MedicalReportAnalyzer:
     Analyzes medical reports to extract and classify medical conditions.
 
     This version:
-      - runs medspaCy on the full text (no jargon gating on sentences)
+      - runs medspaCy on the full text (no jargon sentence gating).
       - then filters extracted entities to only keep those whose text
         appears in the master term list (after normalization).
     """
@@ -201,7 +199,6 @@ class MedicalReportAnalyzer:
     def _pick_column(df: pd.DataFrame, *candidates: str, required: bool = True) -> str:
         """Pick the first present column name (exact, case-sensitive) among candidates."""
         cols = list(df.columns)
-        # Accept simple normalizations: strip and case-insensitive match
         norm = {c.strip().lower(): c for c in cols}
         for cand in candidates:
             k = cand.strip().lower()
@@ -240,12 +237,10 @@ class MedicalReportAnalyzer:
         except Exception as e:
             raise RuntimeError(f"Error reading CSV file: {e}")
 
-        # Map flexible headers to standard ones
         col_rowid = MedicalReportAnalyzer._pick_column(df_raw, "RowID", "ID", "id")
         col_find = MedicalReportAnalyzer._pick_column(
             df_raw, "Findings", "report text", "report_text", "text"
         )
-        # Conclusions is optional; create empty if missing
         try:
             col_concl = MedicalReportAnalyzer._pick_column(
                 df_raw, "Conclusions", "Conclusion", required=False
@@ -284,10 +279,7 @@ class MedicalReportAnalyzer:
         """
         Extract medical conditions from text with sentiment classification.
 
-        NOTE:
-          - We now run on the FULL text (no jargon sentence gating).
-          - After medspaCy finds entities, we keep only those whose text
-            matches the master term list (after normalization).
+        We run on the FULL text and then filter entities against the master term list.
         """
         if not text or (isinstance(text, float) and pd.isna(text)):
             return []
@@ -349,15 +341,25 @@ class MedicalReportAnalyzer:
         """Human-readable string for a condition."""
         return f"{condition['condition']}: {condition['sentiment']} ({condition['reason']})"
 
-    def process_input(self, input_path: str, output_path: str | None = None) -> pd.DataFrame:
+    def process_input(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        max_rows: Optional[int] = None,
+    ) -> pd.DataFrame:
         """
         Process either a CSV or a directory of .txt files.
 
-        NOTE: Word-statistics / jargon gating has been removed.
-              We now rely solely on medspaCy + master-term filtering.
+        If max_rows is given, only the first max_rows reports are analyzed.
+        If max_rows is None, all reports in the input are processed.
         """
         print(f"Loading medical reports from: {input_path}")
         df = self.load_reports(input_path)
+
+        if max_rows is not None:
+            df = df.head(max_rows).copy()
+            print(f"Restricting to first {len(df)} reports (max_rows={max_rows}).")
+
         print(f"Successfully loaded {len(df)} reports")
 
         results: List[Dict[str, Any]] = []
@@ -379,7 +381,9 @@ class MedicalReportAnalyzer:
                 "Findings": r["findings_text"],
                 "Conclusions": r["conclusions_text"],
                 "Conditions_Found": len(all_conditions),
-                "Conditions_List": " | ".join(cond_strings) if cond_strings else "No conditions identified",
+                "Conditions_List": " | ".join(cond_strings)
+                if cond_strings
+                else "No conditions identified",
             }
             for i, c in enumerate(all_conditions, 1):
                 row_out[f"Condition_{i}"] = c["condition"]
@@ -417,13 +421,20 @@ class MedicalReportAnalyzer:
 def main() -> None:
     """
     Usage:
-        python analyze_medical_reports.py [input_path] [output_csv]
+        python analyze_medical_reports.py [input_path] [output_csv] [max_rows]
 
     Where input_path is either:
       • a CSV (flexible headers), or
       • a directory containing .txt files (e.g., input_from_csv/)
+
+    Examples:
+        # Run on ALL rows in mv_reports_10k.csv (full 10k)
+        # (max_rows omitted -> no limit)
+        python analyze_medical_reports.py mv_reports_10k.csv analysis_results_10k.csv
+
+        # Run on ONLY the first 200 reports
+        python analyze_medical_reports.py mv_reports_10k.csv analysis_results_200.csv 200
     """
-    # Parse args
     script_dir = Path(__file__).resolve().parent
     default_input = script_dir / "sample_medical_reports.csv"
     default_output = script_dir / "analysis_results.csv"
@@ -431,20 +442,42 @@ def main() -> None:
     input_path = sys.argv[1] if len(sys.argv) > 1 else str(default_input)
     output_csv = sys.argv[2] if len(sys.argv) > 2 else str(default_output)
 
+    max_rows: Optional[int] = None
+    if len(sys.argv) > 3:
+        try:
+            max_rows = int(sys.argv[3])
+        except ValueError:
+            print(f"[WARN] Could not parse max_rows argument '{sys.argv[3]}'; ignoring.")
+            max_rows = None
+
     print("=" * 80)
     print("MEDICAL REPORT ANALYSIS USING MEDSPACY")
     print("=" * 80)
     print(f"\nInput path: {input_path}")
     print(f"Output file: {output_csv}")
+    if max_rows is not None:
+        print(f"Max rows: {max_rows}")
+    else:
+        print("Max rows: ALL")
 
     analyzer = MedicalReportAnalyzer()
-    results = analyzer.process_input(input_path, output_csv)
+    results = analyzer.process_input(input_path, output_csv, max_rows=max_rows)
     analyzer.print_analysis_summary(results)
 
     print("\n" + "=" * 80)
     print("ANALYSIS COMPLETE")
     print("=" * 80)
 
+
+# ---------------------------------------------------------------------
+# Handy command-line examples (copy-paste from here):
+#
+# Full 10k (all rows):
+#   python analyze_medical_reports.py mv_reports_10k.csv analysis_results_10k.csv
+#
+# First 200 only:
+#   python analyze_medical_reports.py mv_reports_10k.csv analysis_results_200.csv 200
+# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()
