@@ -1,0 +1,332 @@
+[
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "fever",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "SYMPTOM",
+    "start": 22,
+    "end": 27
+  },
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "cough",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "SYMPTOM",
+    "start": 29,
+    "end": 34
+  },
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "shortness of breath",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "SYMPTOM",
+    "start": 40,
+    "end": 59
+  },
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "infiltrates",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "FINDING",
+    "start": 89,
+    "end": 100
+  },
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "pneumonia",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 117,
+    "end": 126
+  },
+  {
+    "row_id": "1",
+    "section": "findings",
+    "condition": "pleural effusion",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 131,
+    "end": 147
+  },
+  {
+    "row_id": "1",
+    "section": "conclusions",
+    "condition": "pneumonia",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 30,
+    "end": 39
+  },
+  {
+    "row_id": "2",
+    "section": "conclusions",
+    "condition": "acute findings",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "FINDING",
+    "start": 24,
+    "end": 38
+  },
+  {
+    "row_id": "3",
+    "section": "findings",
+    "condition": "mitral regurgitation",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 88,
+    "end": 108
+  },
+  {
+    "row_id": "3",
+    "section": "findings",
+    "condition": "atrial enlargement",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "FINDING",
+    "start": 132,
+    "end": 150
+  },
+  {
+    "row_id": "3",
+    "section": "conclusions",
+    "condition": "congestive heart failure",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 25,
+    "end": 49
+  },
+  {
+    "row_id": "3",
+    "section": "conclusions",
+    "condition": "heart failure",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 103,
+    "end": 116
+  },
+  {
+    "row_id": "4",
+    "section": "findings",
+    "condition": "myocardial infarction",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 118,
+    "end": 139
+  },
+  {
+    "row_id": "4",
+    "section": "conclusions",
+    "condition": "myocardial infarction",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 9,
+    "end": 30
+  },
+  {
+    "row_id": "5",
+    "section": "findings",
+    "condition": "demyelinating disease",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 98,
+    "end": 119
+  },
+  {
+    "row_id": "5",
+    "section": "findings",
+    "condition": "multiple sclerosis",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 130,
+    "end": 148
+  },
+  {
+    "row_id": "5",
+    "section": "findings",
+    "condition": "mass",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "FINDING",
+    "start": 153,
+    "end": 157
+  },
+  {
+    "row_id": "5",
+    "section": "conclusions",
+    "condition": "multiple sclerosis",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 31,
+    "end": 49
+  },
+  {
+    "row_id": "6",
+    "section": "findings",
+    "condition": "deep vein thrombosis",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 57,
+    "end": 77
+  },
+  {
+    "row_id": "6",
+    "section": "findings",
+    "condition": "thrombophlebitis",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 128,
+    "end": 144
+  },
+  {
+    "row_id": "6",
+    "section": "conclusions",
+    "condition": "DVT",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 0,
+    "end": 3
+  },
+  {
+    "row_id": "6",
+    "section": "conclusions",
+    "condition": "thrombophlebitis",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 36,
+    "end": 52
+  },
+  {
+    "row_id": "8",
+    "section": "findings",
+    "condition": "anemia",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 32,
+    "end": 38
+  },
+  {
+    "row_id": "8",
+    "section": "findings",
+    "condition": "leukemia",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 130,
+    "end": 138
+  },
+  {
+    "row_id": "8",
+    "section": "findings",
+    "condition": "lymphoma",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 142,
+    "end": 150
+  },
+  {
+    "row_id": "8",
+    "section": "conclusions",
+    "condition": "anemia",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 5,
+    "end": 11
+  },
+  {
+    "row_id": "8",
+    "section": "conclusions",
+    "condition": "malignancy",
+    "sentiment": "false",
+    "reason": "negated",
+    "label": "CONDITION",
+    "start": 85,
+    "end": 95
+  },
+  {
+    "row_id": "9",
+    "section": "conclusions",
+    "condition": "chronic obstructive pulmonary disease",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 25,
+    "end": 62
+  },
+  {
+    "row_id": "9",
+    "section": "conclusions",
+    "condition": "COPD",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "CONDITION",
+    "start": 64,
+    "end": 68
+  },
+  {
+    "row_id": "10",
+    "section": "findings",
+    "condition": "mass",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "FINDING",
+    "start": 26,
+    "end": 30
+  },
+  {
+    "row_id": "10",
+    "section": "findings",
+    "condition": "mass",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "FINDING",
+    "start": 128,
+    "end": 132
+  },
+  {
+    "row_id": "10",
+    "section": "conclusions",
+    "condition": "mass",
+    "sentiment": "true",
+    "reason": "affirmed",
+    "label": "FINDING",
+    "start": 18,
+    "end": 22
+  },
+  {
+    "row_id": "10",
+    "section": "conclusions",
+    "condition": "breast cancer",
+    "sentiment": "indeterminate",
+    "reason": "uncertain",
+    "label": "CONDITION",
+    "start": 92,
+    "end": 105
+  }
+]
