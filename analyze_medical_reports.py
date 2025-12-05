@@ -12,12 +12,12 @@ This version:
   - REMOVES any TF/IDF word stats or "jargon gating" from word_stats.py.
   - Uses a master list of medical terms (medical_terms_master.txt) to filter entities.
   - Supports an optional max_rows argument so you can run only the first N reports.
-
-Author: MedSpacy1 Project (updated for RocketLemma)
+  - AUTOMATICALLY writes a JSON file with an array of found conditions, alongside the CSV.
 """
 
 import sys
 import re
+import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Any, Optional, Set
 from dataclasses import dataclass
@@ -114,7 +114,7 @@ class MedicalReportAnalyzer:
 
     def __post_init__(self):
         """
-        Initialize the MedSpaCy pipeline and load the master term list.
+        Initialize the MedSpacy pipeline and load the master term list.
         """
         print(f"Initializing MedSpacy with model: {self.model_name}")
         try:
@@ -341,6 +341,51 @@ class MedicalReportAnalyzer:
         """Human-readable string for a condition."""
         return f"{condition['condition']}: {condition['sentiment']} ({condition['reason']})"
 
+    @staticmethod
+    def _build_conditions_json(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Build a flat JSON-friendly array of all found conditions.
+
+        Schema (per element):
+            {
+                "row_id": "...",
+                "section": "findings" | "conclusions",
+                "condition": "...",
+                "sentiment": "true" | "false" | "indeterminate",
+                "reason": "affirmed" | "negated" | "uncertain" | "hypothetical",
+                "label": "CONDITION" | "SYMPTOM" | ... (medspaCy label),
+                "start": int,   # character offset
+                "end": int      # character offset
+            }
+        """
+        items: List[Dict[str, Any]] = []
+
+        for r in results:
+            row_id = r["row_id"]
+
+            for section_name, section_key in (("findings", "findings_conditions"),
+                                              ("conclusions", "conclusions_conditions")):
+                for c in r[section_key]:
+                    items.append({
+                        "row_id": row_id,
+                        "section": section_name,
+                        "condition": c.get("condition"),
+                        "sentiment": c.get("sentiment"),
+                        "reason": c.get("reason"),
+                        "label": c.get("label"),
+                        "start": c.get("start"),
+                        "end": c.get("end"),
+                    })
+
+        return items
+
+    @staticmethod
+    def _write_conditions_json(json_items: List[Dict[str, Any]], json_path: Path) -> None:
+        """Write the conditions array to a JSON file."""
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(json_items, f, ensure_ascii=False, indent=2)
+        print(f"JSON conditions saved to: {json_path}")
+
     def process_input(
         self,
         input_path: str,
@@ -352,6 +397,10 @@ class MedicalReportAnalyzer:
 
         If max_rows is given, only the first max_rows reports are analyzed.
         If max_rows is None, all reports in the input are processed.
+
+        Outputs:
+          - CSV with per-report flattened results (Conditions_* columns).
+          - JSON file (same base name as CSV) with a flat array of conditions.
         """
         print(f"Loading medical reports from: {input_path}")
         df = self.load_reports(input_path)
@@ -362,6 +411,7 @@ class MedicalReportAnalyzer:
 
         print(f"Successfully loaded {len(df)} reports")
 
+        # First, run the core analysis and keep the rich results list
         results: List[Dict[str, Any]] = []
         for _, row in df.iterrows():
             analysis = self.analyze_report(
@@ -371,7 +421,10 @@ class MedicalReportAnalyzer:
             )
             results.append(analysis)
 
-        # Flatten results
+        # Build JSON array of all found conditions
+        conditions_json = self._build_conditions_json(results)
+
+        # Flatten results into a CSV-friendly DataFrame
         out_rows: List[Dict[str, Any]] = []
         for r in results:
             all_conditions = r["findings_conditions"] + r["conclusions_conditions"]
@@ -394,8 +447,15 @@ class MedicalReportAnalyzer:
         out_df = pd.DataFrame(out_rows)
 
         if output_path:
-            out_df.to_csv(output_path, index=False)
-            print(f"\nResults saved to: {output_path}")
+            csv_path = Path(output_path)
+            out_df.to_csv(csv_path, index=False)
+            print(f"\nResults saved to CSV: {csv_path}")
+
+            # Derive JSON filename from CSV name
+            json_path = csv_path.with_suffix(".json")
+            self._write_conditions_json(conditions_json, json_path)
+        else:
+            print("[WARN] No output CSV path provided; CSV/JSON will not be written to disk.")
 
         return out_df
 
@@ -454,7 +514,7 @@ def main() -> None:
     print("MEDICAL REPORT ANALYSIS USING MEDSPACY")
     print("=" * 80)
     print(f"\nInput path: {input_path}")
-    print(f"Output file: {output_csv}")
+    print(f"Output file (CSV): {output_csv}")
     if max_rows is not None:
         print(f"Max rows: {max_rows}")
     else:
@@ -477,6 +537,10 @@ def main() -> None:
 #
 # First 200 only:
 #   python analyze_medical_reports.py mv_reports_10k.csv analysis_results_200.csv 200
+#
+# In both cases, you get:
+#   - analysis_results_XXXX.csv  (per-report table)
+#   - analysis_results_XXXX.json (flat array of found conditions)
 # ---------------------------------------------------------------------
 
 if __name__ == "__main__":
