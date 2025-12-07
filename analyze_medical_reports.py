@@ -132,6 +132,47 @@ def classify_status(text_lower: str, start_char: int, end_char: int) -> str:
     return "present"
 
 
+def summarize_by_canonical(items):
+    """
+    Take a list of hit dicts (each with 'canonical' and 'status') and
+    return a per-canonical summary list:
+
+    [
+      { "canonical": "pneumonia", "status": "present" },
+      { "canonical": "heart failure", "status": "absent" },
+      ...
+    ]
+
+    Aggregation rule:
+        - If ANY hit is 'present'  -> overall 'present'
+        - ELSE if ALL are 'absent' -> overall 'absent'
+        - ELSE                     -> 'unknown'
+    """
+    by_canon = {}
+    for item in items:
+        canon = item.get("canonical")
+        status = item.get("status", "unknown")
+        if not canon:
+            continue
+        by_canon.setdefault(canon, []).append(status)
+
+    summary = []
+    for canon, statuses in by_canon.items():
+        if "present" in statuses:
+            agg = "present"
+        elif all(s == "absent" for s in statuses):
+            agg = "absent"
+        else:
+            # mix of absent/unknown or only unknown
+            agg = "unknown"
+        summary.append({
+            "canonical": canon,
+            "status": agg,
+        })
+
+    return summary
+
+
 def extract_conditions_and_findings(text: str):
     """
     Run spaCy + MeSH matchers over the text and return
@@ -226,10 +267,16 @@ def main():
 
         conditions, findings = extract_conditions_and_findings(text)
 
+        # Per-canonical summaries (so you get one "verdict" per condition)
+        condition_summary = summarize_by_canonical(conditions)
+        finding_summary = summarize_by_canonical(findings)
+
         result = {
             "id": row.get("ID"),
             "conditions": conditions,
             "findings": findings,
+            "condition_summary": condition_summary,
+            "finding_summary": finding_summary,
         }
 
         results.append(result)
