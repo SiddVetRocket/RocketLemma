@@ -35,10 +35,30 @@ MESH_FIND_FILE = BASE_DIR / "out" / "findings_mesh.txt"
 # Toggle whether to include synonyms in the phrase matcher
 USE_SYNONYMS = True
 
+# Optional: use MedSpaCy ConText for better negation/uncertainty/historical handling
+USE_MEDSPACY_CONTEXT = True
+
 # Load spaCy model
 nlp = spacy.load("en_core_web_sm")
 
-# Simple context cues for negation / uncertainty around a hit
+
+# --- IMPORTANT: conservative context cues (default is UNKNOWN) ---
+
+# Avoid "no " (too broad -> tons of false negatives/positives depending on window)
+NEGATION_PHRASES = [
+    "no evidence of",
+    "no sign of",
+    "negative for",
+    "without evidence of",
+    "without",
+    "free of",
+    "ruled out",
+    "rule out",
+    "unlikely",
+    "absence of",
+    "denies",
+]
+
 UNCERTAIN_PHRASES = [
     "suspected",
     "suspicious for",
@@ -47,18 +67,89 @@ UNCERTAIN_PHRASES = [
     "may represent",
     "possibly",
     "possible",
-    "likely vs",
+    "likely",
     "question of",
+    "concern for",
+    "probable",
+    "versus",
+    "vs",
 ]
 
-NEGATION_PHRASES = [
-    "no ",
-    "without ",
-    "free of",
-    "rule out",
-    "unlikely",
-    "no evidence of",
+# If you want "present" to be strict, keep this list small and meaningful.
+# Anything not confidently positive should stay UNKNOWN.
+POSITIVE_PHRASES = [
+    "consistent with",
+    "compatible with",
+    "indicative of",
+    "demonstrates",
+    "demonstrating",
+    "shows",
+    "showing",
+    "evidence of",
+    "suggests",
+    "suggestive of",
+    "noted",
+    "seen",
+    "identified",
+    "present",
 ]
+
+
+# -----------------------------------------------------------------------------
+# Optional MedSpaCy setup
+# -----------------------------------------------------------------------------
+
+MEDSPACY_AVAILABLE = False
+_context_nlp = None
+_context_component = None
+
+try:
+    import medspacy  # noqa: F401
+    from medspacy.context import ConTextComponent
+
+    MEDSPACY_AVAILABLE = True
+except Exception:
+    MEDSPACY_AVAILABLE = False
+
+
+def init_medspacy_context():
+    """
+    Initialize a lightweight spaCy pipeline with MedSpaCy ConText only.
+    We keep it separate from the main nlp to avoid complicating matching.
+    """
+    global _context_nlp, _context_component
+    if _context_nlp is not None:
+        return
+
+    _context_nlp = spacy.load("en_core_web_sm")
+    _context_component = ConTextComponent(_context_nlp)
+    # we will call _context_component(doc) manually after setting doc.ents
+    # (so we do NOT need to add it as a pipe)
+    # _context_nlp.add_pipe(_context_component, name="context", last=True)
+
+
+def medspacy_status_from_ent(ent) -> str:
+    """
+    Convert MedSpaCy ConText modifiers into our present/absent/unknown labels.
+
+    Default stays UNKNOWN unless negated.
+    (You can later decide if "no modifiers" should mean present, but that
+     tends to reintroduce false positives.)
+    """
+    mods = getattr(ent._, "modifiers", []) or []
+    cats = {getattr(m, "category", "").lower() for m in mods}
+
+    is_negated = any(c in cats for c in ("negation", "negated"))
+    is_uncertain = any(c in cats for c in ("uncertainty", "uncertain", "possible", "probable"))
+    is_historical = any(c in cats for c in ("historical", "history", "temporality"))
+
+    if is_negated:
+        return "absent"
+    if is_uncertain or is_historical:
+        return "unknown"
+
+    # Conservative default
+    return "unknown"
 
 
 # -----------------------------------------------------------------------------
@@ -67,8 +158,7 @@ NEGATION_PHRASES = [
 
 def build_matchers(use_synonyms: bool = True):
     """
-    Build spaCy PhraseMatchers for conditions and findings
-    using MeSH-derived term lists.
+    Build spaCy PhraseMatchers for conditions and findings using MeSH-derived term lists.
     """
     if not MESH_COND_FILE.exists() or not MESH_FIND_FILE.exists():
         raise FileNotFoundError(
@@ -83,6 +173,9 @@ def build_matchers(use_synonyms: bool = True):
     cond_matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
     find_matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
 
+    # NOTE:
+    # - alias dict typically includes synonyms -> canonical mapping
+    # - syns dict typically includes canonical -> synonyms mapping (naming depends on your loader)
     if use_synonyms:
         cond_terms = list(cond_alias.keys())
         find_terms = list(find_alias.keys())
@@ -111,38 +204,33 @@ cond_matcher, find_matcher, cond_alias, find_alias = build_matchers(USE_SYNONYMS
 
 def classify_status(text_lower: str, start_char: int, end_char: int) -> str:
     """
-    Classify the status of a hit based on a local text window:
-    returns "present", "absent", or "unknown".
+    Conservative classifier:
+      - Negation -> absent
+      - Uncertainty -> unknown
+      - Explicit positive cue -> present
+      - Otherwise -> unknown (DEFAULT)
     """
-    window_start = max(0, start_char - 40)
-    window_end = min(len(text_lower), end_char + 40)
+    window_start = max(0, start_char - 60)
+    window_end = min(len(text_lower), end_char + 60)
     window = text_lower[window_start:window_end]
 
-    # Strong negation -> absent
     for phrase in NEGATION_PHRASES:
         if phrase in window:
             return "absent"
 
-    # Hedging / uncertainty -> unknown
     for phrase in UNCERTAIN_PHRASES:
         if phrase in window:
             return "unknown"
 
-    # Otherwise treat as present
-    return "present"
+    for phrase in POSITIVE_PHRASES:
+        if phrase in window:
+            return "present"
+
+    return "unknown"
 
 
 def summarize_by_canonical(items):
     """
-    Take a list of hit dicts (each with 'canonical' and 'status') and
-    return a per-canonical summary list:
-
-    [
-      { "canonical": "pneumonia", "status": "present" },
-      { "canonical": "heart failure", "status": "absent" },
-      ...
-    ]
-
     Aggregation rule:
         - If ANY hit is 'present'  -> overall 'present'
         - ELSE if ALL are 'absent' -> overall 'absent'
@@ -160,15 +248,11 @@ def summarize_by_canonical(items):
     for canon, statuses in by_canon.items():
         if "present" in statuses:
             agg = "present"
-        elif all(s == "absent" for s in statuses):
+        elif statuses and all(s == "absent" for s in statuses):
             agg = "absent"
         else:
-            # mix of absent/unknown or only unknown
             agg = "unknown"
-        summary.append({
-            "canonical": canon,
-            "status": agg,
-        })
+        summary.append({"canonical": canon, "status": agg})
 
     return summary
 
@@ -187,6 +271,10 @@ def extract_conditions_and_findings(text: str):
     seen_cond_spans = set()
     seen_find_spans = set()
 
+    # Collect spans first so we can optionally run MedSpaCy once
+    cond_hits = []
+    find_hits = []
+
     # CONDITIONS
     for match_id, start, end in cond_matcher(doc):
         span = doc[start:end]
@@ -198,16 +286,7 @@ def extract_conditions_and_findings(text: str):
             continue
         seen_cond_spans.add(key)
 
-        status = classify_status(text_lower, span.start_char, span.end_char)
-
-        conditions.append({
-            "text": span.text,
-            "canonical": canonical,
-            "start": span.start_char,
-            "end": span.end_char,
-            "status": status,
-            "source": "mesh",
-        })
+        cond_hits.append((span, canonical))
 
     # FINDINGS
     for match_id, start, end in find_matcher(doc):
@@ -220,7 +299,61 @@ def extract_conditions_and_findings(text: str):
             continue
         seen_find_spans.add(key)
 
-        status = classify_status(text_lower, span.start_char, span.end_char)
+        find_hits.append((span, canonical))
+
+    # Optional MedSpaCy context classification (single pass per report)
+    status_by_key = {}
+
+    if USE_MEDSPACY_CONTEXT and MEDSPACY_AVAILABLE:
+        init_medspacy_context()
+
+        # IMPORTANT: do NOT call _context_nlp(text) first,
+        # because ConText would run before we set doc.ents.
+        ctx_doc = _context_nlp.make_doc(doc.text)
+
+        ctx_ents = []
+        ent_keys = []
+
+        for span, canonical in (cond_hits + find_hits):
+            ctx_span = ctx_doc.char_span(
+                span.start_char,
+                span.end_char,
+                alignment_mode="contract",
+            )
+            if ctx_span is None:
+                continue
+            ctx_ents.append(ctx_span)
+            ent_keys.append((span.start_char, span.end_char, canonical))
+
+        ctx_doc.ents = tuple(ctx_ents)
+
+        # Apply ConText to our custom ents
+        _context_component(ctx_doc)
+
+        for ent, key in zip(ctx_doc.ents, ent_keys):
+            status_by_key[key] = medspacy_status_from_ent(ent)
+
+    # Build outputs using MedSpaCy if available, else heuristic fallback
+    for span, canonical in cond_hits:
+        key = (span.start_char, span.end_char, canonical)
+        status = status_by_key.get(key)
+        if status is None:
+            status = classify_status(text_lower, span.start_char, span.end_char)
+
+        conditions.append({
+            "text": span.text,
+            "canonical": canonical,
+            "start": span.start_char,
+            "end": span.end_char,
+            "status": status,
+            "source": "mesh",
+        })
+
+    for span, canonical in find_hits:
+        key = (span.start_char, span.end_char, canonical)
+        status = status_by_key.get(key)
+        if status is None:
+            status = classify_status(text_lower, span.start_char, span.end_char)
 
         findings.append({
             "text": span.text,
@@ -258,25 +391,20 @@ def main():
     results = []
     t0 = time.perf_counter()
 
-    for idx, row in df.iterrows():
-        # Adjust column names here if yours differ
+    for _, row in df.iterrows():
         findings_text = str(row.get("Findings", "") or "")
         conclusion_text = str(row.get("Conclusion", "") or "")
 
-        text = " ".join(part for part in [findings_text, conclusion_text] if part)
+        text = " ".join(part for part in (findings_text, conclusion_text) if part)
 
         conditions, findings = extract_conditions_and_findings(text)
-
-        # Per-canonical summaries (so you get one "verdict" per condition)
-        condition_summary = summarize_by_canonical(conditions)
-        finding_summary = summarize_by_canonical(findings)
 
         result = {
             "id": row.get("ID"),
             "conditions": conditions,
             "findings": findings,
-            "condition_summary": condition_summary,
-            "finding_summary": finding_summary,
+            "condition_summary": summarize_by_canonical(conditions),
+            "finding_summary": summarize_by_canonical(findings),
         }
 
         results.append(result)
