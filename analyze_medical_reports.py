@@ -12,7 +12,10 @@ Usage:
 What it does:
 - Loads MeSH-derived term lists (conditions + findings) and matches them in text.
 - Prefers MedSpaCy (TargetMatcher + ConTextComponent) when installed.
-- Falls back to spaCy PhraseMatcher with a sentence-scoped context classifier.
+- Falls back to spaCy PhraseMatcher with a sentence-scoped context classifier:
+    * uncertainty checked first (e.g., "not conclusive" -> unknown)
+    * negation is phrase-based + token-proximity (no blanket "not " negation)
+    * Conclusion defaults to present if mentioned and not negated/uncertain
 - Processes Findings and Conclusion separately; Conclusion has precedence in final summary.
 - Filters overly-generic concepts like "disease".
 - De-dupes repeated hits per (field, canonical, sentence), keeping strongest status.
@@ -53,7 +56,7 @@ POSSIBLE_COUNTS_AS_PRESENT = False
 
 
 # -----------------------------------------------------------------------------
-# Generic term filtering (huge accuracy boost)
+# Generic term filtering (big accuracy boost)
 # -----------------------------------------------------------------------------
 
 GENERIC_CANONICAL_BLACKLIST = {
@@ -65,15 +68,14 @@ def is_generic_canonical(canon: str) -> bool:
     c = (canon or "").strip().lower()
     if not c:
         return True
-    if c in GENERIC_CANONICAL_BLACKLIST:
-        return True
-    return False
+    return c in GENERIC_CANONICAL_BLACKLIST
 
 
 # -----------------------------------------------------------------------------
 # Context cues (fallback mode uses these)
 # -----------------------------------------------------------------------------
 
+# 1) Strong negation phrases (sentence-scoped)
 NEGATION_PHRASES = [
     "no evidence of",
     "no sign of",
@@ -86,11 +88,10 @@ NEGATION_PHRASES = [
     "absence of",
     "not identified",
     "not seen",
-    "no ",        # sentence-scoped, so safe enough for patterns like "No pneumonia"
-    "not ",
-    "without ",
 ]
 
+# 2) Uncertainty phrases (checked BEFORE negation so "not conclusive" -> unknown)
+# IMPORTANT: "not" is not blanket negation in radiology; it often means uncertainty.
 UNCERTAIN_PHRASES = [
     "cannot exclude",
     "cannot rule out",
@@ -103,10 +104,17 @@ UNCERTAIN_PHRASES = [
     "suspicious for",
     "question of",
     "concern for",
+    "concerning for",
+    "not conclusive",
+    "not definitive",
+    "not excluded",
+    "not ruled out",
+    "equivocal",
     "versus",
     "vs",
 ]
 
+# 3) Positive cue phrases (fallback; Conclusion also has a default-present rule)
 POSITIVE_PHRASES = [
     "consistent with",
     "compatible with",
@@ -120,13 +128,16 @@ POSITIVE_PHRASES = [
     "present",
 ]
 
+# Token-based negation, scoped to a small window before the mention
+NEGATION_TOKENS = {"no", "without", "denies"}
+
 
 # -----------------------------------------------------------------------------
 # spaCy setup
 # -----------------------------------------------------------------------------
 
 nlp = spacy.load(SPACY_MODEL)
-# Ensure we have sentence boundaries even if parser isn't present
+# Ensure sentence boundaries even if parser isn't present
 if "parser" not in nlp.pipe_names and "sentencizer" not in nlp.pipe_names:
     nlp.add_pipe("sentencizer")
 
@@ -195,10 +206,10 @@ def load_mesh_terms():
             f"Run: python mesh_terms_extract.py"
         )
 
-    cond_alias, cond_syns = load_mesh_term_file(str(MESH_COND_FILE))
-    find_alias, find_syns = load_mesh_term_file(str(MESH_FIND_FILE))
+    cond_alias, _cond_syns = load_mesh_term_file(str(MESH_COND_FILE))
+    find_alias, _find_syns = load_mesh_term_file(str(MESH_FIND_FILE))
 
-    # We treat alias dicts as alias -> canonical maps for matching
+    # Treat alias dicts as alias -> canonical maps for matching
     cond_canon_to_aliases = _invert_alias_map(cond_alias)
     find_canon_to_aliases = _invert_alias_map(find_alias)
 
@@ -314,28 +325,43 @@ def merge_summaries_conclusion_over_findings(conc: List[dict], find: List[dict])
 # Status classification
 # -----------------------------------------------------------------------------
 
-def spacy_status_from_sentence(span: Span) -> str:
+def spacy_status_from_sentence(span: Span, field: str) -> str:
     """
-    Sentence-scoped status for fallback mode:
-      - negation phrase in sentence => absent
-      - uncertainty phrase => unknown
-      - positive cue => present
-      - default => unknown
+    Improved fallback classifier (Fixes your two cases):
+      1) uncertainty FIRST: "not conclusive for X" => unknown (not absent)
+      2) negation phrases + token-proximity negation near the hit
+      3) positive cues => present
+      4) if field is Conclusion and not negated/uncertain => present (major accuracy bump)
+      5) default => unknown
     """
     sent = span.sent if hasattr(span, "sent") else span.doc[:]
     s = sent.text.lower()
 
-    for p in NEGATION_PHRASES:
-        if p in s:
-            return "absent"
-
+    # 1) Uncertainty first (so "not conclusive" doesn't get misread as negation)
     for p in UNCERTAIN_PHRASES:
         if p in s:
             return "unknown"
 
+    # 2) Strong negation phrases
+    for p in NEGATION_PHRASES:
+        if p in s:
+            return "absent"
+
+    # 3) Token-proximity negation: check a few tokens before the span in the same sentence
+    doc = span.doc
+    left_i = max(sent.start, span.start - 5)
+    left_ctx = doc[left_i:span.start]
+    if any(t.lower_ in NEGATION_TOKENS for t in left_ctx):
+        return "absent"
+
+    # 4) Positive cues
     for p in POSITIVE_PHRASES:
         if p in s:
             return "present"
+
+    # 5) KEY RULE: Conclusion mention defaults to present if not negated/uncertain
+    if (field or "").strip().lower() == "conclusion":
+        return "present"
 
     return "unknown"
 
@@ -343,7 +369,6 @@ def spacy_status_from_sentence(span: Span) -> str:
 def status_from_modifiers(mods) -> str:
     """
     Convert MedSpaCy ConText modifiers -> present/absent/unknown.
-    Default is conservative unknown unless a strong signal is present.
     """
     cats = {getattr(m, "category", "").lower() for m in (mods or [])}
 
@@ -356,6 +381,7 @@ def status_from_modifiers(mods) -> str:
     if any(c in cats for c in ("historical", "history", "temporality", "experiencer")):
         return "unknown"
 
+    # Conservative default (you can change this later)
     return "unknown"
 
 
@@ -367,7 +393,7 @@ def _add_mesh_targets_to_medspacy():
     """
     Adds MeSH-based targets into TargetMatcher once.
 
-    We encode type + canonical in the label:
+    Label encoding:
       COND__<canonical>
       FIND__<canonical>
     """
@@ -405,7 +431,6 @@ def extract_with_medspacy(text: str, field: str) -> Tuple[List[dict], List[dict]
         mods = getattr(t._, "modifiers", []) or []
         status = status_from_modifiers(mods)
 
-        # decode label
         if label.startswith("COND__"):
             canonical = label[len("COND__"):]
             if is_generic_canonical(canonical):
@@ -437,9 +462,7 @@ def extract_with_medspacy(text: str, field: str) -> Tuple[List[dict], List[dict]
                 "modifiers": [{"term": getattr(m, "term", ""), "category": getattr(m, "category", "")} for m in mods],
             })
 
-    conditions = dedupe_hits(conditions)
-    findings = dedupe_hits(findings)
-    return conditions, findings
+    return dedupe_hits(conditions), dedupe_hits(findings)
 
 
 def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict], List[dict]]:
@@ -464,7 +487,7 @@ def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict],
             continue
         seen_cond.add(key)
 
-        status = spacy_status_from_sentence(span)
+        status = spacy_status_from_sentence(span, field)
 
         conditions.append({
             "text": span.text,
@@ -492,7 +515,7 @@ def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict],
             continue
         seen_find.add(key)
 
-        status = spacy_status_from_sentence(span)
+        status = spacy_status_from_sentence(span, field)
 
         findings.append({
             "text": span.text,
@@ -506,9 +529,7 @@ def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict],
             "modifiers": [],
         })
 
-    conditions = dedupe_hits(conditions)
-    findings = dedupe_hits(findings)
-    return conditions, findings
+    return dedupe_hits(conditions), dedupe_hits(findings)
 
 
 def extract_from_field(text: str, field: str) -> Tuple[List[dict], List[dict]]:
