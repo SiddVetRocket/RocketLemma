@@ -13,12 +13,16 @@ What it does:
 - Loads MeSH-derived term lists (conditions + findings) and matches them in text.
 - Prefers MedSpaCy (TargetMatcher + ConTextComponent) when installed.
 - Falls back to spaCy PhraseMatcher with a sentence-scoped context classifier:
-    * uncertainty checked first (e.g., "not conclusive" -> unknown)
+    * uncertainty checked first (e.g., "cannot be ruled out" / "not conclusive" -> unknown)
     * negation is phrase-based + token-proximity (no blanket "not " negation)
     * Conclusion defaults to present if mentioned and not negated/uncertain
 - Processes Findings and Conclusion separately; Conclusion has precedence in final summary.
 - Filters overly-generic concepts like "disease".
 - De-dupes repeated hits per (field, canonical, sentence), keeping strongest status.
+
+Recent fix:
+- "cannot (be) ruled out" is treated as UNCERTAINTY (unknown), and we removed
+  "rule out"/"ruled out" from negation phrases to avoid false ABSENT.
 """
 
 import sys
@@ -76,25 +80,29 @@ def is_generic_canonical(canon: str) -> bool:
 # -----------------------------------------------------------------------------
 
 # 1) Strong negation phrases (sentence-scoped)
+# IMPORTANT: "rule out"/"ruled out" REMOVED from negation to prevent
+#            "cannot be ruled out" => absent (incorrect). Those belong in UNCERTAIN_PHRASES.
 NEGATION_PHRASES = [
     "no evidence of",
     "no sign of",
     "negative for",
     "without evidence of",
     "free of",
-    "ruled out",
-    "rule out",
     "unlikely",
     "absence of",
     "not identified",
     "not seen",
 ]
 
-# 2) Uncertainty phrases (checked BEFORE negation so "not conclusive" -> unknown)
-# IMPORTANT: "not" is not blanket negation in radiology; it often means uncertainty.
+# 2) Uncertainty phrases (checked BEFORE negation)
 UNCERTAIN_PHRASES = [
-    "cannot exclude",
+    # key clinical uncertainty patterns
     "cannot rule out",
+    "cannot be ruled out",
+    "cannot be entirely ruled out",
+    "not ruled out",
+    "cannot exclude",
+
     "may represent",
     "could represent",
     "possible",
@@ -105,11 +113,13 @@ UNCERTAIN_PHRASES = [
     "question of",
     "concern for",
     "concerning for",
+
+    # common radiology hedges
     "not conclusive",
     "not definitive",
     "not excluded",
-    "not ruled out",
     "equivocal",
+
     "versus",
     "vs",
 ]
@@ -327,17 +337,18 @@ def merge_summaries_conclusion_over_findings(conc: List[dict], find: List[dict])
 
 def spacy_status_from_sentence(span: Span, field: str) -> str:
     """
-    Improved fallback classifier (Fixes your two cases):
-      1) uncertainty FIRST: "not conclusive for X" => unknown (not absent)
-      2) negation phrases + token-proximity negation near the hit
-      3) positive cues => present
-      4) if field is Conclusion and not negated/uncertain => present (major accuracy bump)
-      5) default => unknown
+    Improved fallback classifier:
+      1) uncertainty FIRST: "cannot be ruled out" / "not conclusive" => unknown
+      2) negation phrases => absent
+      3) token-proximity negation near the hit => absent
+      4) positive cues => present
+      5) Conclusion default-present if mentioned and not negated/uncertain
+      6) default => unknown
     """
     sent = span.sent if hasattr(span, "sent") else span.doc[:]
     s = sent.text.lower()
 
-    # 1) Uncertainty first (so "not conclusive" doesn't get misread as negation)
+    # 1) Uncertainty first
     for p in UNCERTAIN_PHRASES:
         if p in s:
             return "unknown"
@@ -381,7 +392,6 @@ def status_from_modifiers(mods) -> str:
     if any(c in cats for c in ("historical", "history", "temporality", "experiencer")):
         return "unknown"
 
-    # Conservative default (you can change this later)
     return "unknown"
 
 
