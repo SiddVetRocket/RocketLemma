@@ -5,31 +5,20 @@ Analyze medical reports and extract MeSH-based conditions and findings.
 Usage:
     python analyze_medical_reports.py input.csv output.json [limit]
 
-    input.csv   : CSV with at least ID, Findings, Conclusion columns
-    output.json : JSON array of per-report results
-    limit       : optional integer, number of rows to process (e.g. 200)
-
-What it does:
-- Loads MeSH-derived term lists (conditions + findings) and matches them in text.
+Notes:
 - Prefers MedSpaCy (TargetMatcher + ConTextComponent) when installed.
-- Falls back to spaCy PhraseMatcher with a sentence-scoped context classifier:
-    * uncertainty checked first (e.g., "cannot be ruled out" / "not conclusive" -> unknown)
-    * negation is phrase-based + token-proximity (no blanket "not " negation)
-    * Conclusion defaults to present if mentioned and not negated/uncertain
-- Processes Findings and Conclusion separately; Conclusion has precedence in final summary.
-- Filters overly-generic concepts like "disease".
-- De-dupes repeated hits per (field, canonical, sentence), keeping strongest status.
-
-Recent fix:
-- "cannot (be) ruled out" is treated as UNCERTAINTY (unknown), and we removed
-  "rule out"/"ruled out" from negation phrases to avoid false ABSENT.
+- Falls back to spaCy PhraseMatcher + a mention-scoped context classifier.
+- Key improvement vs older versions:
+    * context is scoped to the local clause/window around the mention (NOT whole sentence)
+    * recommendation/screening language yields unknown (avoids false present)
+    * better handling of "though/but/however" clauses
 """
 
 import sys
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import spacy
@@ -49,14 +38,16 @@ MESH_COND_FILE = BASE_DIR / "out" / "conditions_mesh.txt"
 MESH_FIND_FILE = BASE_DIR / "out" / "findings_mesh.txt"
 
 USE_SYNONYMS = True
-
-# Prefer MedSpaCy TargetMatcher + ConTextComponent if available
 USE_MEDSPACY = True
-
 SPACY_MODEL = "en_core_web_sm"
 
 # If True, "possible/probable/suspected" counts as present; otherwise unknown.
 POSSIBLE_COUNTS_AS_PRESENT = False
+
+# Context classifier tuning
+CTX_WINDOW_CHARS = 70  # local window around mention
+CTX_NEG_WINDOW_TOKENS = 6  # token window before mention for "no/without/denies"
+CTX_DEBUG = False  # set True if you want to print debug windows
 
 
 # -----------------------------------------------------------------------------
@@ -76,55 +67,96 @@ def is_generic_canonical(canon: str) -> bool:
 
 
 # -----------------------------------------------------------------------------
-# Context cues (fallback mode uses these)
+# Context cues (fallback mode)
 # -----------------------------------------------------------------------------
 
-# 1) Strong negation phrases (sentence-scoped)
-# IMPORTANT: "rule out"/"ruled out" REMOVED from negation to prevent
-#            "cannot be ruled out" => absent (incorrect). Those belong in UNCERTAIN_PHRASES.
+# Negation phrases (strong)
 NEGATION_PHRASES = [
     "no evidence of",
     "no sign of",
     "negative for",
     "without evidence of",
     "free of",
-    "unlikely",
     "absence of",
     "not identified",
     "not seen",
 ]
 
-# 2) Uncertainty phrases (checked BEFORE negation)
+# Token-based negation near mention
+NEGATION_TOKENS = {"no", "without", "denies", "deny", "denied"}
+
+# Uncertainty / hedge language
 UNCERTAIN_PHRASES = [
-    # key clinical uncertainty patterns
+    # cannot rule out patterns
     "cannot rule out",
     "cannot be ruled out",
     "cannot be entirely ruled out",
     "not ruled out",
     "cannot exclude",
+    "not excluded",
 
+    # general hedges
     "may represent",
     "could represent",
-    "possible",
+    "could be",
+    "may be",
     "possibly",
+    "possible",
     "probable",
     "suspected",
     "suspicious for",
     "question of",
     "concern for",
     "concerning for",
-
-    # common radiology hedges
+    "equivocal",
     "not conclusive",
     "not definitive",
-    "not excluded",
-    "equivocal",
 
+    # differential indicators
+    "differentials include",
+    "differential includes",
+    "differential diagnoses include",
+    "ddx",
     "versus",
-    "vs",
+    " vs ",
+    " vs.",
+    " vs:",
+
+    # ranking/hedging
+    "less likely",
+    "least likely",
+    "more likely than",
+    "favored",
+    "favors",
 ]
 
-# 3) Positive cue phrases (fallback; Conclusion also has a default-present rule)
+# Recommendation / screening language -> unknown (very common false-present source)
+RECOMMENDATION_PHRASES = [
+    "screen for",
+    "to screen for",
+    "recommend",
+    "recommended",
+    "recommendation",
+    "consider",
+    "should be considered",
+    "could be considered",
+    "to evaluate for",
+    "evaluate for",
+    "to assess for",
+    "assess for",
+    "to rule out",
+    "rule out",
+    "r/o ",
+    "work up",
+    "further work up",
+    "follow-up",
+    "follow up",
+    "recheck",
+    "repeat radiographs",
+    "repeat imaging",
+]
+
+# Positive cues
 POSITIVE_PHRASES = [
     "consistent with",
     "compatible with",
@@ -136,10 +168,23 @@ POSITIVE_PHRASES = [
     "seen",
     "identified",
     "present",
+    "diagnostic for",
+    "indicative of",
+    # strong-but-common in your reports:
+    "most consistent with",
+    "most concerning for",
 ]
 
-# Token-based negation, scoped to a small window before the mention
-NEGATION_TOKENS = {"no", "without", "denies"}
+
+# Clause splitters — scoping the mention to its clause
+CLAUSE_SPLITTERS = [
+    " but ",
+    " though ",
+    " although ",
+    " however ",
+    ";",
+    "\n",
+]
 
 
 # -----------------------------------------------------------------------------
@@ -147,7 +192,6 @@ NEGATION_TOKENS = {"no", "without", "denies"}
 # -----------------------------------------------------------------------------
 
 nlp = spacy.load(SPACY_MODEL)
-# Ensure sentence boundaries even if parser isn't present
 if "parser" not in nlp.pipe_names and "sentencizer" not in nlp.pipe_names:
     nlp.add_pipe("sentencizer")
 
@@ -171,17 +215,14 @@ except Exception:
 
 
 def _ensure_medspacy_pipeline():
-    """Create medspacy pipeline once: TargetMatcher then ConText."""
     global _med_nlp, _target_matcher, _context
     if _med_nlp is not None:
         return
 
     _med_nlp = medspacy.load(model=SPACY_MODEL)
-
     _target_matcher = TargetMatcher(_med_nlp)
     _context = ConTextComponent(_med_nlp)
 
-    # Insert target matcher early; context last
     if "target_matcher" not in _med_nlp.pipe_names:
         if "ner" in _med_nlp.pipe_names:
             _med_nlp.add_pipe(_target_matcher, name="target_matcher", before="ner")
@@ -216,10 +257,9 @@ def load_mesh_terms():
             f"Run: python mesh_terms_extract.py"
         )
 
-    cond_alias, _cond_syns = load_mesh_term_file(str(MESH_COND_FILE))
-    find_alias, _find_syns = load_mesh_term_file(str(MESH_FIND_FILE))
+    cond_alias, _ = load_mesh_term_file(str(MESH_COND_FILE))
+    find_alias, _ = load_mesh_term_file(str(MESH_FIND_FILE))
 
-    # Treat alias dicts as alias -> canonical maps for matching
     cond_canon_to_aliases = _invert_alias_map(cond_alias)
     find_canon_to_aliases = _invert_alias_map(find_alias)
 
@@ -230,7 +270,7 @@ cond_alias, find_alias, cond_canon_to_aliases, find_canon_to_aliases = load_mesh
 
 
 # -----------------------------------------------------------------------------
-# Fallback phrase matchers (when medspacy isn't available)
+# Phrase matchers (fallback)
 # -----------------------------------------------------------------------------
 
 def build_phrase_matchers(use_synonyms: bool = True):
@@ -255,7 +295,7 @@ cond_phrase_matcher, find_phrase_matcher = build_phrase_matchers(USE_SYNONYMS)
 
 
 # -----------------------------------------------------------------------------
-# Dedupe utilities
+# Dedupe + summary
 # -----------------------------------------------------------------------------
 
 def dedupe_hits(hits: List[dict]) -> List[dict]:
@@ -277,10 +317,6 @@ def dedupe_hits(hits: List[dict]) -> List[dict]:
 
     return list(best.values())
 
-
-# -----------------------------------------------------------------------------
-# Summary + precedence
-# -----------------------------------------------------------------------------
 
 def summarize_by_canonical(items: List[dict]) -> List[dict]:
     by_canon: Dict[str, List[str]] = {}
@@ -332,45 +368,105 @@ def merge_summaries_conclusion_over_findings(conc: List[dict], find: List[dict])
 
 
 # -----------------------------------------------------------------------------
-# Status classification
+# Context classification (fallback)
 # -----------------------------------------------------------------------------
+
+def _extract_clause_containing_offset(text: str, offset: int) -> str:
+    """
+    Split text into coarse clauses and return the clause that contains the offset.
+    If we can't find a clean clause, return original text.
+    """
+    if not text:
+        return ""
+    # We'll do a manual scan split while preserving indices by slicing progressively.
+    # Simpler: split on delimiters, then pick the clause that contains the substring around offset.
+    # We'll approximate by splitting, then reconstruct cumulative lengths.
+    parts = [text]
+    for delim in CLAUSE_SPLITTERS:
+        new_parts = []
+        for p in parts:
+            if delim in p:
+                new_parts.extend(p.split(delim))
+            else:
+                new_parts.append(p)
+        parts = new_parts
+
+    # Find clause by cumulative lengths
+    cum = 0
+    for p in parts:
+        start = cum
+        end = cum + len(p)
+        if start <= offset <= end:
+            return p
+        cum = end + 1
+    return text
+
 
 def spacy_status_from_sentence(span: Span, field: str) -> str:
     """
-    Improved fallback classifier:
-      1) uncertainty FIRST: "cannot be ruled out" / "not conclusive" => unknown
-      2) negation phrases => absent
-      3) token-proximity negation near the hit => absent
-      4) positive cues => present
-      5) Conclusion default-present if mentioned and not negated/uncertain
-      6) default => unknown
+    Mention-scoped context classifier (robust fallback):
+
+      Order (most conservative):
+        1) recommendation/screening near mention -> unknown
+        2) uncertainty near mention -> unknown (or present if POSSIBLE_COUNTS_AS_PRESENT and it's a "possible/probable" type)
+        3) negation near mention -> absent
+        4) positive cues near mention -> present
+        5) Conclusion default-present -> present
+        6) default -> unknown
     """
     sent = span.sent if hasattr(span, "sent") else span.doc[:]
-    s = sent.text.lower()
+    sent_text = sent.text
+    s_lower = sent_text.lower()
 
-    # 1) Uncertainty first
-    for p in UNCERTAIN_PHRASES:
-        if p in s:
+    # local window around mention (character-based)
+    local_start = max(0, (span.start_char - sent.start_char) - CTX_WINDOW_CHARS)
+    local_end = min(len(sent_text), (span.end_char - sent.start_char) + CTX_WINDOW_CHARS)
+    local = sent_text[local_start:local_end]
+    local_lower = local.lower()
+
+    # clause scoping: prefer the clause which contains the mention offset (in sentence coords)
+    mention_mid = int(((span.start_char + span.end_char) / 2) - sent.start_char)
+    clause = _extract_clause_containing_offset(sent_text, mention_mid)
+    clause_lower = clause.lower()
+
+    # choose the more targeted scope (clause) but fall back to local window too
+    scope_lower = clause_lower if clause_lower.strip() else local_lower
+
+    if CTX_DEBUG:
+        print("----")
+        print("SENT:", sent_text)
+        print("SCOPE:", scope_lower)
+
+    # 1) recommendation/screening language
+    for p in RECOMMENDATION_PHRASES:
+        if p in scope_lower or p in local_lower:
             return "unknown"
 
-    # 2) Strong negation phrases
+    # 2) uncertainty (hedges, DDx, cannot rule out)
+    for p in UNCERTAIN_PHRASES:
+        if p in scope_lower or p in local_lower:
+            if POSSIBLE_COUNTS_AS_PRESENT and p in ("possible", "possibly", "probable", "suspected"):
+                return "present"
+            return "unknown"
+
+    # 3) strong negation phrases (scope-limited)
     for p in NEGATION_PHRASES:
-        if p in s:
+        if p in scope_lower or p in local_lower:
             return "absent"
 
-    # 3) Token-proximity negation: check a few tokens before the span in the same sentence
+    # 3b) token-proximity negation ("no", "without") right before mention in sentence token space
     doc = span.doc
-    left_i = max(sent.start, span.start - 5)
+    left_i = max(sent.start, span.start - CTX_NEG_WINDOW_TOKENS)
     left_ctx = doc[left_i:span.start]
     if any(t.lower_ in NEGATION_TOKENS for t in left_ctx):
         return "absent"
 
-    # 4) Positive cues
+    # 4) positive cues
     for p in POSITIVE_PHRASES:
-        if p in s:
+        if p in scope_lower or p in local_lower:
             return "present"
 
-    # 5) KEY RULE: Conclusion mention defaults to present if not negated/uncertain
+    # 5) Conclusion default-present if mentioned and not negated/uncertain/recommendation
     if (field or "").strip().lower() == "conclusion":
         return "present"
 
@@ -400,13 +496,6 @@ def status_from_modifiers(mods) -> str:
 # -----------------------------------------------------------------------------
 
 def _add_mesh_targets_to_medspacy():
-    """
-    Adds MeSH-based targets into TargetMatcher once.
-
-    Label encoding:
-      COND__<canonical>
-      FIND__<canonical>
-    """
     if not (USE_MEDSPACY and MEDSPACY_AVAILABLE):
         return
 
@@ -483,7 +572,6 @@ def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict],
     seen_cond = set()
     seen_find = set()
 
-    # CONDITIONS
     for _, start, end in cond_phrase_matcher(doc):
         span = doc[start:end]
         alias = span.text.lower()
@@ -511,7 +599,6 @@ def extract_with_spacy_phrasematcher(text: str, field: str) -> Tuple[List[dict],
             "modifiers": [],
         })
 
-    # FINDINGS
     for _, start, end in find_phrase_matcher(doc):
         span = doc[start:end]
         alias = span.text.lower()
@@ -578,42 +665,30 @@ def main():
         findings_text = str(row.get("Findings", "") or "")
         conclusion_text = str(row.get("Conclusion", "") or "")
 
-        # Extract separately
         cond_f, find_f = extract_from_field(findings_text, "Findings")
         cond_c, find_c = extract_from_field(conclusion_text, "Conclusion")
 
-        # Combine and dedupe across fields
         all_conditions = dedupe_hits(cond_f + cond_c)
         all_findings = dedupe_hits(find_f + find_c)
 
-        # Summaries per field
         cond_sum_f = summarize_by_canonical(cond_f)
         cond_sum_c = summarize_by_canonical(cond_c)
         find_sum_f = summarize_by_canonical(find_f)
         find_sum_c = summarize_by_canonical(find_c)
 
-        # Merged summaries (Conclusion > Findings)
         cond_summary = merge_summaries_conclusion_over_findings(cond_sum_c, cond_sum_f)
         finding_summary = merge_summaries_conclusion_over_findings(find_sum_c, find_sum_f)
 
         results.append({
             "id": rid,
-
-            # raw hits (debuggable)
             "conditions": all_conditions,
             "findings": all_findings,
-
-            # per-field summaries (debuggable)
             "condition_summary_findings": cond_sum_f,
             "condition_summary_conclusion": cond_sum_c,
             "finding_summary_findings": find_sum_f,
             "finding_summary_conclusion": find_sum_c,
-
-            # merged (consumable)
             "condition_summary": cond_summary,
             "finding_summary": finding_summary,
-
-            # metadata
             "engine": "medspacy" if (USE_MEDSPACY and MEDSPACY_AVAILABLE) else "spacy_fallback",
             "possible_counts_as_present": POSSIBLE_COUNTS_AS_PRESENT,
         })
