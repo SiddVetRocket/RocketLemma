@@ -11,8 +11,8 @@ Usage:
 
 Behavior:
 - Uses MeSH-derived term lists (conditions + findings) via PhraseMatcher.
-- If MedSpaCy is installed: TargetMatcher + ConTextComponent overrides heuristics.
-- Otherwise: sentence-scoped regex heuristics to assign present/absent/unknown.
+- If MedSpaCy is installed: TargetMatcher + ConText overrides heuristics.
+- Otherwise: sentence-scoped heuristics to assign present/absent/unknown.
 - Aggressive filtering of ultra-generic junk "conditions" (disease, abnormality, etc.).
 """
 
@@ -21,7 +21,7 @@ import json
 import time
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 import pandas as pd
 import spacy
@@ -46,17 +46,16 @@ POSSIBLE_COUNTS_AS_PRESENT = False  # keep hedged language as unknown
 SPACY_MODEL = "en_core_web_sm"
 
 nlp = spacy.load(SPACY_MODEL)
+# Ensure sentence boundaries exist (sm usually has parser, but be defensive)
+if "sentencizer" not in nlp.pipe_names and "parser" not in nlp.pipe_names:
+    nlp.add_pipe("sentencizer")
 
 
 # -----------------------------------------------------------------------------
 # Expanded generic stoplist
 # -----------------------------------------------------------------------------
-# Goal: remove high-frequency, low-information "conditions" that inflate hits:
-#   - disease / disorder / condition / abnormality / pathology / changes / process
-# Keep it conservative: we mostly drop these when they are single-token, generic,
-# or very short phrases.
+
 GENERIC_CANONICAL_STOP = {
-    # ultra-generic medical nouns
     "disease", "diseases",
     "disorder", "disorders",
     "condition", "conditions",
@@ -78,23 +77,19 @@ GENERIC_CANONICAL_STOP = {
     "technique",
     "effusion",  # optional: comment out if you want to keep
     "edema",     # optional: comment out if you want to keep
-    # vague body/clinical terms
     "pain",
     "swelling",
     "enlargement",
 }
 
-# surface-text stopwords: if a matched span itself is junky
 GENERIC_SPAN_STOP = {
     "disease", "disorder", "condition", "abnormality", "pathology",
     "process", "finding", "findings", "changes", "change", "appearance",
     "technique", "artifact",
 }
 
-# Additional “junk patterns” often appearing as canonicals or spans.
-# These aren’t always wrong, but they are usually too broad to be useful.
 GENERIC_REGEX_STOP = [
-    r"^airway disease$",           # too broad, often used as a bucket
+    r"^airway disease$",
     r"^lower airway disease$",
     r"^upper airway disease$",
     r"^pulmonary pathology$",
@@ -113,26 +108,20 @@ def is_generic_garbage(canonical: str, span_text: str) -> bool:
     if not c:
         return True
 
-    # 1) Exact canonical stop
     if c in GENERIC_CANONICAL_STOP:
-        # If the *span* is multiword and looks specific, keep it.
-        # Example: "pulmonary edema" is specific; "edema" is not.
+        # If the span is multiword and looks specific, keep it.
         if len(t.split()) <= 1:
             return True
-        # If canonical itself is short and generic phrase, drop
         if len(c.split()) <= 2 and c in GENERIC_CANONICAL_STOP:
             return True
 
-    # 2) Exact span stop (single-word junk)
     if t in GENERIC_SPAN_STOP:
         return True
 
-    # 3) Regex stop for common overly broad phrases
     for pat in GENERIC_REGEX_STOP:
         if re.match(pat, c):
             return True
 
-    # 4) Very short “catch-all” phrases
     if len(c) <= 4 and c in {"mass", "pain"}:
         return True
 
@@ -143,6 +132,7 @@ def is_generic_garbage(canonical: str, span_text: str) -> bool:
 # Cue lists (sentence-scoped)
 # -----------------------------------------------------------------------------
 
+# These should ALWAYS be "unknown" (hedged / differential / not-conclusive language)
 UNCERTAIN_CUES = [
     "cannot exclude",
     "cannot rule out",
@@ -153,6 +143,13 @@ UNCERTAIN_CUES = [
     "cannot be excluded",
     "cannot be ruled out",
     "cannot be entirely ruled out",
+    "not conclusive for",
+    "not definitive for",
+    "not diagnostic for",
+    "concerning but not conclusive",
+    "concerning but not definitive",
+    "cannot confirm",
+    "unable to confirm",
     "possible",
     "possibly",
     "may represent",
@@ -170,7 +167,6 @@ UNCERTAIN_CUES = [
     "vs",
     "versus",
     "differential",
-    # IMPORTANT: “rule out” = uncertainty in clinical writing
     "rule out",
     "r/o",
     "evaluate for",
@@ -206,6 +202,16 @@ NEGATION_SCOPED_PREFIXES = [
     "no signs of",
 ]
 
+# “hard” negation phrases that should NOT be overridden by uncertainty
+HARD_NEGATION_PHRASES = [
+    "no evidence of",
+    "no sign of",
+    "no signs of",
+    "negative for",
+    "without",
+    "free of",
+]
+
 SEVERITY_CUES = [
     "mild", "moderate", "severe", "marked",
     "progressive", "worsening", "persistent",
@@ -232,6 +238,8 @@ def build_matchers(use_synonyms: bool = True):
     cond_matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
     find_matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
 
+    # If use_synonyms=True, match aliases (surface forms) and map to canonical via alias dict.
+    # If use_synonyms=False, match canonical keys.
     cond_terms = list(cond_alias.keys()) if use_synonyms else list(cond_syns.keys())
     find_terms = list(find_alias.keys()) if use_synonyms else list(find_syns.keys())
 
@@ -247,43 +255,87 @@ cond_matcher, find_matcher, cond_alias, find_alias = build_matchers(USE_SYNONYMS
 
 
 # -----------------------------------------------------------------------------
-# Optional: MedSpaCy integration (TargetMatcher + ConTextComponent)
+# Optional: MedSpaCy integration (TargetMatcher + ConText)
 # -----------------------------------------------------------------------------
 
 MEDSPACY_AVAILABLE = False
 medspacy_nlp = None
-medspacy_target_matcher = None
+
+def _silence_medspacy_debug_logs():
+    """
+    PyRuSH uses loguru and is extremely chatty at DEBUG.
+    This disables it without affecting your own prints.
+    """
+    # loguru-based (PyRuSH)
+    try:
+        from loguru import logger
+        logger.remove()
+        # Only show WARNING+ from anything using loguru
+        logger.add(sys.stderr, level="WARNING")
+    except Exception:
+        pass
+
+    # standard logging-based (fallback)
+    try:
+        import logging
+        logging.getLogger().setLevel(logging.WARNING)
+        for name in [
+            "PyRuSH",
+            "PyRuSH.PyRuSHSentencizer",
+            "medspacy",
+        ]:
+            logging.getLogger(name).setLevel(logging.WARNING)
+    except Exception:
+        pass
 
 def try_setup_medspacy():
-    global MEDSPACY_AVAILABLE, medspacy_nlp, medspacy_target_matcher
+    """
+    Correct setup for medspacy 1.3.x:
+      - Use medspacy.load(enable=[...]) to get pipeline with target_matcher + context
+      - Add TargetRules into the existing 'medspacy_target_matcher' pipe
+      - ConText will attach negation/uncertainty/etc as span extensions
+    """
+    global MEDSPACY_AVAILABLE, medspacy_nlp
+
     if not USE_MEDSPACY_IF_AVAILABLE:
         return
 
     try:
+        _silence_medspacy_debug_logs()
+
         import medspacy
-        from medspacy.target_matcher import TargetMatcher
-        from medspacy.context import ConTextComponent
+        from medspacy.target_matcher import TargetRule
 
-        medspacy_nlp = medspacy.load()
-        medspacy_target_matcher = TargetMatcher(medspacy_nlp)
+        # Only enable what we need; keeps it fast and predictable
+        medspacy_nlp = medspacy.load(enable=["medspacy_target_matcher", "medspacy_context"])
 
-        # Add MeSH alias terms as targets, but we still map alias->canonical ourselves.
-        cond_terms = list(cond_alias.keys())
-        find_terms = list(find_alias.keys())
+        tm = medspacy_nlp.get_pipe("medspacy_target_matcher")
 
-        if cond_terms:
-            medspacy_target_matcher.add("COND", cond_terms)
-        if find_terms:
-            medspacy_target_matcher.add("FIND", find_terms)
+        # Clear rules to avoid duplicates across reruns (dev sessions)
+        try:
+            tm.rules = []
+        except Exception:
+            pass
 
-        medspacy_nlp.add_pipe(medspacy_target_matcher, name="target_matcher", before="ner")
+        rules: List[TargetRule] = []
 
-        context = ConTextComponent(medspacy_nlp)
-        medspacy_nlp.add_pipe(context, name="context")
+        # Add MeSH alias terms as targets (COND/FIND). We still map alias->canonical ourselves.
+        for alias in cond_alias.keys():
+            a = (alias or "").strip()
+            if a:
+                rules.append(TargetRule(literal=a, category="COND"))
+
+        for alias in find_alias.keys():
+            a = (alias or "").strip()
+            if a:
+                rules.append(TargetRule(literal=a, category="FIND"))
+
+        tm.add(rules)
 
         MEDSPACY_AVAILABLE = True
     except Exception:
         MEDSPACY_AVAILABLE = False
+        medspacy_nlp = None
 
 try_setup_medspacy()
 
@@ -323,65 +375,102 @@ def classify_status_sentence_scoped(sentence: str, term_text: str) -> str:
         return "unknown"
 
     # 1) Uncertainty wins (unknown)
-    # (prevents "not conclusive" from being mistaken as absent)
     if any(cue in sl for cue in UNCERTAIN_CUES) and re.search(term_pat, sl):
-        # Treat plain "unlikely X" as unknown rather than absent for safety
         return "unknown"
 
-    # 2) Hit-scoped negation (absent)
-    # Covers: "No ... pneumonia", "without ... pneumonia", "negative for pneumonia"
+    # 2) Scoped negation => absent
     for pref in NEGATION_SCOPED_PREFIXES:
         pat = rf"(?:\b{re.escape(pref)}\b)\s+[^.\n;:]{{0,200}}{term_pat}"
         if re.search(pat, sl):
-            # avoid "no change in pneumonia" edge cases
             if "no change" in sl and re.search(term_pat, sl):
                 continue
             return "absent"
 
-    # 3) Strong present cues
+    # 3) Present cues => present
     if any(cue in sl for cue in PRESENT_CUES) and re.search(term_pat, sl):
-        # guard "no evidence of" already handled above
         return "present"
 
-    # 4) Severity near term -> present (fixes “progressive moderate to severe pneumothorax…”)
-    if re.search(rf"\b({'|'.join(SEVERITY_CUES)})\b[^.\n;:]{{0,90}}{term_pat}", sl):
+    # 4) Severity near term => present
+    sev_pat = rf"\b({'|'.join(SEVERITY_CUES)})\b[^.\n;:]{{0,90}}{term_pat}"
+    if re.search(sev_pat, sl):
         return "present"
 
-    # 5) Bullet line in conclusion often indicates asserted findings
+    # 5) Bullet line implies present unless it looks like examples
     if s.lstrip().startswith(("*", "-", "•")) and re.search(term_pat, sl):
-        # But if it's an example list, keep unknown
         if any(x in sl for x in EXAMPLE_CUES):
             return "unknown"
         return "present"
 
-    # Default
     return "unknown"
 
-def medspacy_status_from_target(target) -> Tuple[str, List[Dict]]:
-    mods_out = []
+def _force_unknown_if_uncertain_sentence(sentence: str, current_status: str) -> str:
+    """
+    Critical fix:
+    If ConText incorrectly marks something as NEGATED_EXISTENCE in a sentence like
+      - 'cannot be ruled out'
+      - 'not conclusive for'
+      - 'concerning but not conclusive'
+    then we force final status to UNKNOWN.
+
+    We do NOT override true hard negation like 'no evidence of ...' / 'negative for ...'
+    """
+    s = (sentence or "").strip()
+    sl = s.lower()
+    if not sl:
+        return current_status
+
+    # If there's an explicit hard negation phrase, keep "absent" if we already have absent.
+    if current_status == "absent":
+        if any(hn in sl for hn in HARD_NEGATION_PHRASES):
+            return current_status
+        # If the sentence is an example list or differential list, treat as unknown
+        if any(cue in sl for cue in UNCERTAIN_CUES):
+            return "unknown"
+
+    # If already present, don't downgrade.
+    return current_status
+
+def medspacy_status_from_span(span, sentence: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Pull ConText status from a target span.
+    Then apply sentence-level override to fix mis-tags (not conclusive / cannot rule out).
+    """
+    mods_out: List[Dict[str, Any]] = []
+
+    # Collect modifiers if available (version-dependent)
     try:
-        mods = list(getattr(target._, "modifiers", []))
+        mods = list(getattr(span._, "modifiers", []))
+        for m in mods:
+            mods_out.append({
+                "term": getattr(m, "literal", None) or getattr(m, "term", None),
+                "category": getattr(m, "category", None),
+                "direction": getattr(m, "direction", None),
+            })
     except Exception:
-        mods = []
+        pass
 
-    cats = []
-    for m in mods:
-        cat = (getattr(m, "category", "") or "").lower()
-        term = (getattr(m, "term", "") or "")
-        direction = (getattr(m, "direction", "") or "")
-        cats.append(cat)
-        mods_out.append({"term": term, "category": cat, "direction": direction})
+    def _get_flag(name: str) -> bool:
+        try:
+            return bool(getattr(span._, name))
+        except Exception:
+            return False
 
-    # Negation => absent
-    if any("neg" in c for c in cats):
-        return "absent", mods_out
+    is_neg = _get_flag("is_negated")
+    is_unc = _get_flag("is_uncertain")
+    is_hx  = _get_flag("is_historical")
+    is_fam = _get_flag("is_family")
 
-    # Uncertainty/possible/hypothetical/historical/family => unknown
-    if any(any(x in c for x in ("uncertain", "possible", "probable", "hypothetical", "historical", "family", "tempor")) for c in cats):
-        return ("present" if POSSIBLE_COUNTS_AS_PRESENT else "unknown"), mods_out
+    if is_neg:
+        status = "absent"
+    elif is_unc or is_hx or is_fam:
+        status = ("present" if POSSIBLE_COUNTS_AS_PRESENT else "unknown")
+    else:
+        status = "present"
 
-    # No modifiers / no relevant modifiers => present
-    return "present", mods_out
+    # 🔥 Fix: ConText sometimes treats "not conclusive for" as negation.
+    status = _force_unknown_if_uncertain_sentence(sentence, status)
+
+    return status, mods_out
 
 def summarize_by_canonical(items: List[Dict]) -> List[Dict]:
     by_canon: Dict[str, List[str]] = {}
@@ -401,7 +490,6 @@ def summarize_by_canonical(items: List[Dict]) -> List[Dict]:
         else:
             agg = "unknown"
         summary.append({"canonical": canon, "status": agg})
-
     return summary
 
 
@@ -418,8 +506,8 @@ def extract_conditions_and_findings(findings_text: str, conclusion_text: str):
 
     seen = set()
 
-    def add_hit(kind: str, field: str, span_text: str, canonical: str, status: str, sentence: str, modifiers=None, source="mesh+spacy"):
-        # de-dupe at sentence-level per canonical per field
+    def add_hit(kind: str, field: str, span_text: str, canonical: str,
+                status: str, sentence: str, modifiers=None, source="mesh+spacy"):
         key = (kind, field, _norm(canonical), _norm(sentence))
         if key in seen:
             return
@@ -441,25 +529,33 @@ def extract_conditions_and_findings(findings_text: str, conclusion_text: str):
 
         (conditions if kind == "condition" else findings).append(d)
 
-    # --- medspacy index (override) ---
+    # --- medspacy doc (combined, for ConText) ---
     med_doc = None
-    med_targets = []
-    med_index = {}
+    med_index: Dict[Tuple[str, str], List[Any]] = {}
 
     if MEDSPACY_AVAILABLE and medspacy_nlp is not None:
         combined = " ".join([t for t in [findings_text, conclusion_text] if t]).strip()
         if combined:
             med_doc = medspacy_nlp(combined)
-            try:
-                med_targets = list(getattr(med_doc._, "targets", []))
-            except Exception:
-                med_targets = []
 
-        for t in med_targets:
-            alias_l = _norm(getattr(t, "text", ""))
-            lbl = _norm(getattr(t, "label_", "")).upper()
-            if alias_l and lbl in ("COND", "FIND"):
-                med_index.setdefault((alias_l, lbl), []).append(t)
+            spans: List[Any] = []
+
+            try:
+                spans.extend(list(med_doc.ents))
+            except Exception:
+                pass
+
+            try:
+                for _, group in med_doc.spans.items():
+                    spans.extend(list(group))
+            except Exception:
+                pass
+
+            for sp in spans:
+                alias_l = _norm(getattr(sp, "text", ""))
+                cat = (getattr(sp, "label_", "") or "").upper().strip()
+                if alias_l and cat in ("COND", "FIND"):
+                    med_index.setdefault((alias_l, cat), []).append(sp)
 
     def process_field(doc, field_name: str):
         if doc is None:
@@ -476,12 +572,14 @@ def extract_conditions_and_findings(findings_text: str, conclusion_text: str):
             modifiers = None
             source = "mesh+spacy"
 
-            # Override with medspacy ConText if available
             if MEDSPACY_AVAILABLE:
                 cands = med_index.get((alias, "COND"), [])
                 if cands:
-                    status, modifiers = medspacy_status_from_target(cands[0])
+                    status, modifiers = medspacy_status_from_span(cands[0], sent)
                     source = "mesh+medspacy"
+
+            # Extra safety: even if status came from medspacy, enforce uncertainty override
+            status = _force_unknown_if_uncertain_sentence(sent, status)
 
             add_hit("condition", field_name, span.text, canonical, status, sent, modifiers, source=source)
 
@@ -499,8 +597,10 @@ def extract_conditions_and_findings(findings_text: str, conclusion_text: str):
             if MEDSPACY_AVAILABLE:
                 cands = med_index.get((alias, "FIND"), [])
                 if cands:
-                    status, modifiers = medspacy_status_from_target(cands[0])
+                    status, modifiers = medspacy_status_from_span(cands[0], sent)
                     source = "mesh+medspacy"
+
+            status = _force_unknown_if_uncertain_sentence(sent, status)
 
             add_hit("finding", field_name, span.text, canonical, status, sent, modifiers, source=source)
 
